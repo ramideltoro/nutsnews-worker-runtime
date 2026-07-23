@@ -164,6 +164,7 @@ describe("RabbitMQ transport", () => {
       connection: {
         url: "amqp://worker.example.test"
       },
+      messageIdFactory: () => "018f1598-2dd5-7c4f-9f92-8f7a7f8b3902",
       payloadLoader: (envelopeValue) => {
         loadedMessageId = envelopeValue.messageId;
 
@@ -172,7 +173,8 @@ describe("RabbitMQ transport", () => {
         };
       },
       seams: {
-        network: new FakeRabbitMqNetwork(channel)
+        network: new FakeRabbitMqNetwork(channel),
+        random: () => 1
       }
     });
     const acked = channel.nextAck();
@@ -200,14 +202,25 @@ describe("RabbitMQ transport", () => {
       "ack:1"
     ]);
     const retryEnvelope = JSON.parse(channel.published[0]!.content.toString("utf8")) as {
+      readonly messageId: string;
+      readonly causationId: string;
+      readonly correlationId: string;
+      readonly idempotencyKey: string;
       readonly attempt: {
         readonly count: number;
         readonly lastAttemptAt?: string;
       };
     };
+    expect(retryEnvelope.messageId).toBe("018f1598-2dd5-7c4f-9f92-8f7a7f8b3902");
+    expect(retryEnvelope.causationId).toBe("018f1598-2dd5-7c4f-9f92-8f7a7f8b3900");
+    expect(retryEnvelope.correlationId).toBe("018f1598-2dd5-7c4f-9f92-8f7a7f8b38ff");
+    expect(retryEnvelope.idempotencyKey).toBe("feed:world:story-003");
     expect(retryEnvelope.attempt).toMatchObject({
       count: 2,
       lastAttemptAt: expect.any(String) as string
+    });
+    expect(channel.published[0]?.options.headers).toMatchObject({
+      retryJitterMs: 3_000
     });
   });
 });
@@ -302,9 +315,7 @@ class FakeRabbitMqChannel implements RabbitMqConfirmChannel {
     readonly exchange: string;
     readonly routingKey: string;
     readonly content: Buffer;
-    readonly options: {
-      readonly messageId?: string;
-    };
+    readonly options: Readonly<Record<string, unknown>>;
   }[] = [];
   prefetches: number[] = [];
   events: string[] = [];
@@ -353,7 +364,7 @@ class FakeRabbitMqChannel implements RabbitMqConfirmChannel {
     exchange: string,
     routingKey: string,
     content: Buffer,
-    options: { readonly messageId?: string },
+    options: Readonly<Record<string, unknown>>,
     callback: (error: Error | null) => void
   ): boolean {
     this.published.push({

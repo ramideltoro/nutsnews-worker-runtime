@@ -14,8 +14,8 @@ import {
 describe("runtime package metadata", () => {
   it("exports the package identity used by downstream installers", () => {
     expect(RUNTIME_PACKAGE_NAME).toBe("@ramideltoro/nutsnews-worker-runtime");
-    expect(RUNTIME_PACKAGE_VERSION).toBe("0.2.0");
-    expect(RUNTIME_PACKAGE_STATUS).toBe("rabbitmq-client-primitives");
+    expect(RUNTIME_PACKAGE_VERSION).toBe("0.3.0");
+    expect(RUNTIME_PACKAGE_STATUS).toBe("retry-dlq-idempotency-middleware");
   });
 
   it("pins the contracts package and broker-client dependency boundary", () => {
@@ -29,6 +29,7 @@ describe("runtime package metadata", () => {
       "broker-lifecycle",
       "message-handling",
       "rabbitmq-client",
+      "retry-dlq-idempotency-middleware",
       "idempotency-hooks",
       "telemetry",
       "health",
