@@ -4,6 +4,12 @@ All notable changes to `@ramideltoro/nutsnews-worker-runtime` are documented her
 
 This package follows semantic versioning. Published versions are immutable; consumers roll back by pinning a previously published version.
 
+## 0.3.0 - 2026-07-23
+
+- Add failure classification, redaction, retry envelope generation, terminal failure payload creation, replay primitives, and at-least-once inbox/outbox middleware interfaces.
+- Update RabbitMQ retry settlement to publish a new message ID, preserve causation/correlation/idempotency fields, increment attempt metadata, include retry jitter metadata, and wait for publisher confirm before original ack.
+- Add tests for duplicate, conflict, crash-after-side-effect recovery, poison, replay gates, redaction, retry exhaustion, terminal failure payloads, and retry transfer ordering.
+
 ## 0.2.0 - 2026-07-23
 
 - Add resilient RabbitMQ transport primitives using confirm channels, mandatory persistent publishing, confirm timeouts, and unroutable-message errors.

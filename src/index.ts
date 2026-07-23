@@ -1,14 +1,17 @@
 export * from "./broker.js";
+export * from "./failure.js";
 export * from "./health.js";
 export * from "./idempotency.js";
 export * from "./message.js";
+export * from "./processing.js";
 export * from "./rabbitmq.js";
+export * from "./retry.js";
 export * from "./shutdown.js";
 export * from "./telemetry.js";
 
 export const RUNTIME_PACKAGE_NAME = "@ramideltoro/nutsnews-worker-runtime" as const;
-export const RUNTIME_PACKAGE_VERSION = "0.2.0" as const;
-export const RUNTIME_PACKAGE_STATUS = "rabbitmq-client-primitives" as const;
+export const RUNTIME_PACKAGE_VERSION = "0.3.0" as const;
+export const RUNTIME_PACKAGE_STATUS = "retry-dlq-idempotency-middleware" as const;
 export const RUNTIME_CONTRACTS_PACKAGE = "@ramideltoro/nutsnews-worker-contracts" as const;
 export const RUNTIME_CONTRACTS_PACKAGE_VERSION = "0.3.1" as const;
 
@@ -27,6 +30,7 @@ export const AVAILABLE_RUNTIME_MODULES = [
   "broker-lifecycle",
   "message-handling",
   "rabbitmq-client",
+  "retry-dlq-idempotency-middleware",
   "idempotency-hooks",
   "telemetry",
   "health",

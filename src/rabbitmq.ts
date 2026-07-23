@@ -23,6 +23,12 @@ import type {
   RuntimeMessageProcessingResult
 } from "./message.js";
 import {
+  computeRetryJitterMs,
+  createRetryEnvelope,
+  randomUuidMessageIdFactory,
+  type RuntimeMessageIdFactory
+} from "./retry.js";
+import {
   SYSTEM_RUNTIME_CLOCK,
   emitRuntimeTelemetry,
   runtimeNow,
@@ -103,6 +109,8 @@ export interface RabbitMqTransportOptions {
   readonly confirmTimeoutMs?: number;
   readonly reconnect?: Partial<RabbitMqReconnectPolicy>;
   readonly payloadLoader?: RabbitMqPayloadLoader;
+  readonly retryJitterRatio?: number;
+  readonly messageIdFactory?: RuntimeMessageIdFactory;
   readonly telemetry?: RuntimeTelemetrySink;
   readonly seams?: RabbitMqRuntimeSeams;
   readonly onConsumerError?: (error: unknown, context: RabbitMqConsumerErrorContext) => void | Promise<void>;
@@ -216,6 +224,7 @@ class RabbitMqTransport implements RuntimeBrokerTransport {
   private readonly sleep: (delayMs: number) => Promise<void>;
   private readonly random: () => number;
   private readonly network: RabbitMqNetworkAdapter;
+  private readonly messageIdFactory: RuntimeMessageIdFactory;
   private readonly reconnectPolicy: RabbitMqReconnectPolicy;
   private readonly consumers = new Map<string, ConsumerRegistration>();
   private connection: RabbitMqConnection | undefined;
@@ -229,6 +238,7 @@ class RabbitMqTransport implements RuntimeBrokerTransport {
     this.sleep = options.seams?.sleep ?? defaultSleep;
     this.random = options.seams?.random ?? Math.random;
     this.network = options.seams?.network ?? DEFAULT_RABBITMQ_NETWORK_ADAPTER;
+    this.messageIdFactory = options.messageIdFactory ?? randomUuidMessageIdFactory;
     this.reconnectPolicy = {
       ...DEFAULT_RABBITMQ_RECONNECT_POLICY,
       ...options.reconnect
@@ -448,12 +458,17 @@ class RabbitMqTransport implements RuntimeBrokerTransport {
     }
 
     if (result.action === "retry") {
-      const retryEnvelope = nextAttemptEnvelope(result.envelope, runtimeNow(this.clock));
+      const retryEnvelope = createRetryEnvelope(result.envelope, {
+        now: runtimeNow(this.clock),
+        messageIdFactory: this.messageIdFactory
+      });
+      const retryJitterMs = computeRetryJitterMs(result.destination.ttlMs, this.options.retryJitterRatio ?? 0.1, this.random);
       await publishEnvelopeWithConfirm(channel, {
         envelope: retryEnvelope,
         exchange: getWorkerRoute(result.envelope.route).retryExchange,
         routingKey: result.destination.routingKey,
-        confirmTimeoutMs: this.confirmTimeoutMs
+        confirmTimeoutMs: this.confirmTimeoutMs,
+        retryJitterMs
       });
       channel.ack(message);
       return;
@@ -549,6 +564,7 @@ export async function publishEnvelopeWithConfirm(
     readonly exchange: string;
     readonly routingKey: string;
     readonly confirmTimeoutMs: number;
+    readonly retryJitterMs?: number;
   }
 ): Promise<void> {
   const content = Buffer.from(JSON.stringify(options.envelope), "utf8");
@@ -594,7 +610,7 @@ export async function publishEnvelopeWithConfirm(
     channel.on("close", onClose);
     channel.on("error", onChannelError);
 
-    channel.publish(options.exchange, options.routingKey, content, publishOptions(options.envelope), (error) => {
+    channel.publish(options.exchange, options.routingKey, content, publishOptions(options.envelope, options.retryJitterMs), (error) => {
       if (error !== null) {
         fail(new RabbitMqPublishError("confirm-nack", options.exchange, options.routingKey, options.envelope.messageId));
         return;
@@ -610,7 +626,7 @@ export async function publishEnvelopeWithConfirm(
   });
 }
 
-function publishOptions(envelope: WorkerMessageEnvelope): Options.Publish {
+function publishOptions(envelope: WorkerMessageEnvelope, retryJitterMs: number | undefined): Options.Publish {
   return {
     persistent: true,
     mandatory: true,
@@ -625,7 +641,12 @@ function publishOptions(envelope: WorkerMessageEnvelope): Options.Publish {
       route: envelope.route,
       attemptCount: envelope.attempt.count,
       idempotencyKey: envelope.idempotencyKey,
-      traceparent: envelope.traceparent
+      traceparent: envelope.traceparent,
+      ...(retryJitterMs === undefined
+        ? {}
+        : {
+            retryJitterMs
+          })
     }
   };
 }
@@ -700,17 +721,6 @@ function consumerErrorContext(
     stage,
     messageId: message.properties.messageId,
     routingKey: message.fields.routingKey
-  };
-}
-
-function nextAttemptEnvelope(envelope: WorkerMessageEnvelope, attemptedAt: string): WorkerMessageEnvelope {
-  return {
-    ...envelope,
-    attempt: {
-      ...envelope.attempt,
-      count: Math.min(envelope.attempt.count + 1, envelope.attempt.max),
-      lastAttemptAt: attemptedAt
-    }
   };
 }
 

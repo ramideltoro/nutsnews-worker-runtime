@@ -5,7 +5,7 @@ Package: `@ramideltoro/nutsnews-worker-runtime`
 Consumers must install exact immutable versions from GitHub Packages:
 
 ```sh
-npm install @ramideltoro/nutsnews-worker-runtime@0.2.0
+npm install @ramideltoro/nutsnews-worker-runtime@0.3.0
 ```
 
 CI consumers use the owner-scoped npm registry and a short-lived `GITHUB_TOKEN`:

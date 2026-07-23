@@ -3,7 +3,7 @@
 Consumers install exact immutable versions from GitHub Packages:
 
 ```sh
-npm install @ramideltoro/nutsnews-worker-runtime@0.2.0
+npm install @ramideltoro/nutsnews-worker-runtime@0.3.0
 ```
 
 CI consumers use the owner-scoped npm registry and repository `GITHUB_TOKEN` package-read permissions:
@@ -18,8 +18,8 @@ CI consumers use the owner-scoped npm registry and repository `GITHUB_TOKEN` pac
 Before rollout, consumers verify the exact version and integrity:
 
 ```sh
-npm view @ramideltoro/nutsnews-worker-runtime@0.2.0 version --registry=https://npm.pkg.github.com
-npm view @ramideltoro/nutsnews-worker-runtime@0.2.0 dist.integrity --registry=https://npm.pkg.github.com
+npm view @ramideltoro/nutsnews-worker-runtime@0.3.0 version --registry=https://npm.pkg.github.com
+npm view @ramideltoro/nutsnews-worker-runtime@0.3.0 dist.integrity --registry=https://npm.pkg.github.com
 ```
 
 Release workflow evidence must include:
