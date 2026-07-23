@@ -2,12 +2,13 @@ export * from "./broker.js";
 export * from "./health.js";
 export * from "./idempotency.js";
 export * from "./message.js";
+export * from "./rabbitmq.js";
 export * from "./shutdown.js";
 export * from "./telemetry.js";
 
 export const RUNTIME_PACKAGE_NAME = "@ramideltoro/nutsnews-worker-runtime" as const;
-export const RUNTIME_PACKAGE_VERSION = "0.1.0" as const;
-export const RUNTIME_PACKAGE_STATUS = "runtime-bootstrap" as const;
+export const RUNTIME_PACKAGE_VERSION = "0.2.0" as const;
+export const RUNTIME_PACKAGE_STATUS = "rabbitmq-client-primitives" as const;
 export const RUNTIME_CONTRACTS_PACKAGE = "@ramideltoro/nutsnews-worker-contracts" as const;
 export const RUNTIME_CONTRACTS_PACKAGE_VERSION = "0.3.1" as const;
 
@@ -17,7 +18,7 @@ export const RUNTIME_COMPATIBILITY_POLICY = {
   consumerInstall:
     "Consumers install exact immutable GitHub Packages versions and upgrade only after service-local runtime tests pass.",
   dependencyBoundary:
-    "The runtime package may depend on the contracts package only; deployable services provide broker, idempotency, telemetry, and shutdown adapters.",
+    "The runtime package may depend only on the contracts package and narrow broker client libraries; deployable services provide business logic, idempotency storage, telemetry sinks, and shutdown adapters.",
   rollback:
     "Consumers roll back by restoring the previously pinned runtime package version; published versions are not republished in place."
 } as const;
@@ -25,6 +26,7 @@ export const RUNTIME_COMPATIBILITY_POLICY = {
 export const AVAILABLE_RUNTIME_MODULES = [
   "broker-lifecycle",
   "message-handling",
+  "rabbitmq-client",
   "idempotency-hooks",
   "telemetry",
   "health",

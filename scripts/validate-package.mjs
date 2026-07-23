@@ -9,6 +9,12 @@ const publicApi = readFileSync(join(root, "src", "index.ts"), "utf8");
 const contractsPackageName = "@ramideltoro/nutsnews-worker-contracts";
 const contractsPackageVersion = "0.3.1";
 const contractsPackageSpec = "https://github.com/ramideltoro/nutsnews-worker-contracts/releases/download/v0.3.1/ramideltoro-nutsnews-worker-contracts-0.3.1.tgz";
+const amqplibPackageName = "amqplib";
+const amqplibPackageVersion = "2.0.1";
+const allowedSourceImports = new Set([
+  contractsPackageName,
+  amqplibPackageName
+]);
 const requiredScripts = [
   "build",
   "typecheck",
@@ -94,8 +100,9 @@ function assertPackageMetadata() {
   assert(packageJson.publishConfig?.access === "public", "publish access must be public");
 
   const dependencies = packageJson.dependencies ?? {};
-  assert(Object.keys(dependencies).length === 1, "runtime package may depend only on the contracts package");
+  assert(Object.keys(dependencies).length === 2, "runtime package may depend only on the contracts package and approved broker client");
   assert(dependencies[contractsPackageName] === contractsPackageSpec, "contracts dependency must resolve to the approved exact release artifact");
+  assert(dependencies[amqplibPackageName] === amqplibPackageVersion, "amqplib dependency must be pinned to the approved exact version");
 
   for (const script of requiredScripts) {
     assert(typeof packageJson.scripts?.[script] === "string", `missing npm script: ${script}`);
@@ -111,6 +118,13 @@ function assertInstalledContractsPackage() {
 
   assert(installedManifest.name === contractsPackageName, "installed contracts package has the wrong name");
   assert(installedManifest.version === contractsPackageVersion, "installed contracts package has the wrong version");
+}
+
+function assertInstalledBrokerPackage() {
+  const installedManifest = JSON.parse(readFileSync(join(root, "node_modules", "amqplib", "package.json"), "utf8"));
+
+  assert(installedManifest.name === amqplibPackageName, "installed broker package has the wrong name");
+  assert(installedManifest.version === amqplibPackageVersion, "installed broker package has the wrong version");
 }
 
 function assertVersionExportMatchesManifest() {
@@ -151,7 +165,7 @@ function assertSourceImportsStayInBoundary() {
     for (const match of matches) {
       const specifier = match[1] ?? match[2] ?? "";
 
-      if (specifier.startsWith(".") || specifier === contractsPackageName) {
+      if (specifier.startsWith(".") || specifier.startsWith("node:") || allowedSourceImports.has(specifier)) {
         continue;
       }
 
@@ -217,6 +231,7 @@ function expectedBuildOutputFiles() {
 
 assertPackageMetadata();
 assertInstalledContractsPackage();
+assertInstalledBrokerPackage();
 assertVersionExportMatchesManifest();
 assertNoForbiddenSourceReferences();
 assertSourceImportsStayInBoundary();
