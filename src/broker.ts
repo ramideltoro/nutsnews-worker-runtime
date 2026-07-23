@@ -46,10 +46,12 @@ export interface BrokerConsumerHandle {
 
 export interface RuntimeBrokerTransport {
   readonly name: string;
+  readonly inFlightDeliveryCount?: number;
   connect(): Promise<void>;
   assertTopology(routes: readonly WorkerRoute[]): Promise<void>;
   publish(command: BrokerPublishCommand): Promise<BrokerPublishReceipt>;
   consume(stage: WorkerStage, handler: BrokerDeliveryHandler): Promise<BrokerConsumerHandle>;
+  drain?(timeoutMs?: number): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -140,6 +142,7 @@ class ManagedBrokerLifecycle implements BrokerLifecycle {
       this.consumerHandles.delete(handle);
     }
 
+    await this.transport.drain?.();
     await this.transport.close();
     await this.transition("closed", reason);
   }

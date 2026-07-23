@@ -3,6 +3,7 @@ import {
   emitRuntimeTelemetry,
   runtimeNow,
   type RuntimeClock,
+  type RuntimeTelemetryFlusher,
   type RuntimeTelemetrySink
 } from "./telemetry.js";
 
@@ -38,7 +39,79 @@ export interface RuntimeShutdownControllerOptions {
   readonly signals?: readonly RuntimeShutdownSignal[];
   readonly timeoutMs?: number;
   readonly telemetry?: RuntimeTelemetrySink;
+  readonly telemetryFlusher?: RuntimeTelemetryFlusher;
   readonly clock?: RuntimeClock;
+}
+
+export interface RuntimeInFlightDrainController {
+  readonly inFlight: number;
+  readonly isDraining: boolean;
+  stopAcceptingWork(): void;
+  track<T>(operation: () => T | Promise<T>): Promise<T>;
+  waitForDrain(timeoutMs?: number): Promise<void>;
+}
+
+export interface RuntimeInFlightDrainOptions {
+  readonly timeoutMs?: number;
+}
+
+export function createRuntimeInFlightDrainController(
+  options: RuntimeInFlightDrainOptions = {}
+): RuntimeInFlightDrainController {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_RUNTIME_SHUTDOWN_TIMEOUT_MS;
+  const waiters = new Set<() => void>();
+  let inFlight = 0;
+  let draining = false;
+
+  function notifyIfDrained(): void {
+    if (inFlight !== 0) {
+      return;
+    }
+
+    for (const waiter of waiters) {
+      waiter();
+    }
+
+    waiters.clear();
+  }
+
+  return {
+    get inFlight(): number {
+      return inFlight;
+    },
+    get isDraining(): boolean {
+      return draining;
+    },
+    stopAcceptingWork(): void {
+      draining = true;
+      notifyIfDrained();
+    },
+    async track<T>(operation: () => T | Promise<T>): Promise<T> {
+      if (draining) {
+        throw new Error("Runtime is draining and cannot accept new work.");
+      }
+
+      inFlight += 1;
+
+      try {
+        return await operation();
+      } finally {
+        inFlight = Math.max(0, inFlight - 1);
+        notifyIfDrained();
+      }
+    },
+    async waitForDrain(timeoutOverrideMs?: number): Promise<void> {
+      draining = true;
+
+      if (inFlight === 0) {
+        return;
+      }
+
+      await withTimeout(new Promise<void>((resolve) => {
+        waiters.add(resolve);
+      }), timeoutOverrideMs ?? timeoutMs);
+    }
+  };
 }
 
 export function createRuntimeShutdownController(
@@ -69,6 +142,7 @@ export function createRuntimeShutdownController(
       name: "runtime.shutdown.started",
       level: "info",
       at: context.startedAt,
+      outcome: "draining",
       attributes: {
         signal
       }
@@ -80,20 +154,26 @@ export function createRuntimeShutdownController(
         name: "runtime.shutdown.completed",
         level: "info",
         at: runtimeNow(clock),
+        durationMs: Math.max(0, clock.now().getTime() - Date.parse(context.startedAt)),
+        outcome: "drained",
         attributes: {
           signal
         }
       });
+      await flushRuntimeTelemetry(options.telemetryFlusher);
     } catch (error: unknown) {
       await emitRuntimeTelemetry(options.telemetry, {
         name: "runtime.shutdown.failed",
         level: "error",
         at: runtimeNow(clock),
+        durationMs: Math.max(0, clock.now().getTime() - Date.parse(context.startedAt)),
+        outcome: "failure",
         attributes: {
           signal,
           error: classifyShutdownError(error)
         }
       });
+      await flushRuntimeTelemetry(options.telemetryFlusher);
       throw error;
     } finally {
       stop();
@@ -177,4 +257,8 @@ function classifyShutdownError(error: unknown): string {
   }
 
   return "unknown-shutdown-error";
+}
+
+async function flushRuntimeTelemetry(flusher: RuntimeTelemetryFlusher | undefined): Promise<void> {
+  await flusher?.flush();
 }

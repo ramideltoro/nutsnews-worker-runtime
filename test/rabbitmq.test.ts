@@ -71,7 +71,9 @@ describe("RabbitMQ topology assertion", () => {
 describe("RabbitMQ confirm publishing", () => {
   it("publishes persistent mandatory JSON envelopes and waits for confirms", async () => {
     const channel = new FakeRabbitMqChannel();
-    const envelopeValue = envelope();
+    const envelopeValue = envelope({
+      tracestate: "vendor=value"
+    });
 
     await publishEnvelopeWithConfirm(channel, {
       envelope: envelopeValue,
@@ -88,6 +90,10 @@ describe("RabbitMQ confirm publishing", () => {
       contentEncoding: "utf-8",
       messageId: envelopeValue.messageId,
       correlationId: envelopeValue.correlationId
+    });
+    expect(channel.published[0]?.options.headers).toMatchObject({
+      traceparent: envelopeValue.traceparent,
+      tracestate: "vendor=value"
     });
     expect(JSON.parse(channel.published[0]!.content.toString("utf8"))).toMatchObject({
       messageId: envelopeValue.messageId,
@@ -222,6 +228,52 @@ describe("RabbitMQ transport", () => {
     expect(channel.published[0]?.options.headers).toMatchObject({
       retryJitterMs: 3_000
     });
+  });
+
+  it("drains in-flight deliveries before closing the channel", async () => {
+    const channel = new FakeRabbitMqChannel();
+    const transport = createRabbitMqTransport({
+      connection: {
+        url: "amqp://worker.example.test"
+      },
+      drainTimeoutMs: 1_000,
+      seams: {
+        network: new FakeRabbitMqNetwork(channel)
+      }
+    });
+    let finishHandler: (() => void) | undefined;
+    const acked = channel.nextAck();
+
+    await transport.connect();
+    await transport.assertTopology(WORKER_ROUTES);
+    await transport.consume("fetch", (delivery) => new Promise((resolve) => {
+      expect(delivery.envelope).toMatchObject({
+        messageId: "018f1598-2dd5-7c4f-9f92-8f7a7f8b3901"
+      });
+      finishHandler = () => {
+        resolve({
+          action: "ack",
+          reason: "handled",
+          envelope: envelope()
+        });
+      };
+    }));
+    channel.deliver("fetch", message(envelope()));
+
+    const close = transport.close();
+    await Promise.resolve();
+    expect(channel.events).toContain("cancel:consumer-nutsnews.worker.fetch.v1");
+    expect(channel.events).not.toContain("channel-close");
+
+    finishHandler?.();
+    await acked;
+    await close;
+
+    expect(channel.events).toEqual([
+      "cancel:consumer-nutsnews.worker.fetch.v1",
+      "ack:1",
+      "channel-close"
+    ]);
   });
 });
 
@@ -408,7 +460,7 @@ class FakeRabbitMqChannel implements RabbitMqConfirmChannel {
   }
 
   cancel(consumerTag: string): Promise<unknown> {
-    void consumerTag;
+    this.events.push(`cancel:${consumerTag}`);
 
     return Promise.resolve({});
   }
@@ -424,6 +476,7 @@ class FakeRabbitMqChannel implements RabbitMqConfirmChannel {
   }
 
   close(): Promise<void> {
+    this.events.push("channel-close");
     this.emit("close");
 
     return Promise.resolve();
@@ -496,7 +549,7 @@ function message(envelopeValue: WorkerMessageEnvelope): RabbitMqConsumeMessage {
   };
 }
 
-function envelope(): WorkerMessageEnvelope {
+function envelope(overrides: Partial<WorkerMessageEnvelope> = {}): WorkerMessageEnvelope {
   return {
     schemaId: WORKER_ENVELOPE_SCHEMA_ID,
     schemaVersion: CURRENT_ENVELOPE_SCHEMA_VERSION,
@@ -526,6 +579,7 @@ function envelope(): WorkerMessageEnvelope {
       uri: "worker-payload://fixture/feed-fetch-request",
       mediaType: "application/json",
       sizeBytes: 512
-    }
+    },
+    ...overrides
   };
 }

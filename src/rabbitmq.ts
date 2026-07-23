@@ -29,6 +29,9 @@ import {
   type RuntimeMessageIdFactory
 } from "./retry.js";
 import {
+  runtimeTraceHeadersFromEnvelope
+} from "./trace.js";
+import {
   SYSTEM_RUNTIME_CLOCK,
   emitRuntimeTelemetry,
   runtimeNow,
@@ -79,6 +82,8 @@ export const DEFAULT_RABBITMQ_RECONNECT_POLICY = {
   jitterRatio: 0.2
 } as const satisfies RabbitMqReconnectPolicy;
 
+export const DEFAULT_RABBITMQ_DRAIN_TIMEOUT_MS = 30_000;
+
 export interface RabbitMqTlsOptions {
   readonly ca?: string | Buffer | readonly (string | Buffer)[];
   readonly cert?: string | Buffer;
@@ -109,6 +114,7 @@ export interface RabbitMqTransportOptions {
   readonly confirmTimeoutMs?: number;
   readonly reconnect?: Partial<RabbitMqReconnectPolicy>;
   readonly payloadLoader?: RabbitMqPayloadLoader;
+  readonly drainTimeoutMs?: number;
   readonly retryJitterRatio?: number;
   readonly messageIdFactory?: RuntimeMessageIdFactory;
   readonly telemetry?: RuntimeTelemetrySink;
@@ -226,7 +232,9 @@ class RabbitMqTransport implements RuntimeBrokerTransport {
   private readonly network: RabbitMqNetworkAdapter;
   private readonly messageIdFactory: RuntimeMessageIdFactory;
   private readonly reconnectPolicy: RabbitMqReconnectPolicy;
+  private readonly drainTimeoutMs: number;
   private readonly consumers = new Map<string, ConsumerRegistration>();
+  private readonly inFlightDeliveries = new Set<Promise<void>>();
   private connection: RabbitMqConnection | undefined;
   private channel: RabbitMqConfirmChannel | undefined;
   private routes: readonly WorkerRoute[] = [];
@@ -239,6 +247,7 @@ class RabbitMqTransport implements RuntimeBrokerTransport {
     this.random = options.seams?.random ?? Math.random;
     this.network = options.seams?.network ?? DEFAULT_RABBITMQ_NETWORK_ADAPTER;
     this.messageIdFactory = options.messageIdFactory ?? randomUuidMessageIdFactory;
+    this.drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_RABBITMQ_DRAIN_TIMEOUT_MS;
     this.reconnectPolicy = {
       ...DEFAULT_RABBITMQ_RECONNECT_POLICY,
       ...options.reconnect
@@ -289,7 +298,7 @@ class RabbitMqTransport implements RuntimeBrokerTransport {
         return;
       }
 
-      void this.handleDelivery(stage, handler, message);
+      this.trackDelivery(stage, handler, message);
     }, {
       noAck: false
     });
@@ -326,6 +335,7 @@ class RabbitMqTransport implements RuntimeBrokerTransport {
     }
 
     this.consumers.clear();
+    await this.drain();
 
     if (this.channel !== undefined) {
       await this.channel.close();
@@ -336,6 +346,20 @@ class RabbitMqTransport implements RuntimeBrokerTransport {
       await this.connection.close();
       this.connection = undefined;
     }
+  }
+
+  get inFlightDeliveryCount(): number {
+    return this.inFlightDeliveries.size;
+  }
+
+  async drain(timeoutMs = this.drainTimeoutMs): Promise<void> {
+    if (this.inFlightDeliveries.size === 0) {
+      return;
+    }
+
+    await withDrainTimeout(Promise.all([
+      ...this.inFlightDeliveries
+    ]).then(() => undefined), timeoutMs);
   }
 
   private get prefetch(): number {
@@ -406,7 +430,7 @@ class RabbitMqTransport implements RuntimeBrokerTransport {
           return;
         }
 
-        void this.handleDelivery(registration.stage, registration.handler, message);
+        this.trackDelivery(registration.stage, registration.handler, message);
       }, {
         noAck: false
       });
@@ -415,6 +439,18 @@ class RabbitMqTransport implements RuntimeBrokerTransport {
         consumerTag: reply.consumerTag
       });
     }
+  }
+
+  private trackDelivery(
+    stage: WorkerStage,
+    handler: BrokerDeliveryHandler,
+    message: RabbitMqConsumeMessage
+  ): void {
+    const delivery = this.handleDelivery(stage, handler, message);
+    this.inFlightDeliveries.add(delivery);
+    void delivery.finally(() => {
+      this.inFlightDeliveries.delete(delivery);
+    });
   }
 
   private async handleDelivery(
@@ -641,7 +677,7 @@ function publishOptions(envelope: WorkerMessageEnvelope, retryJitterMs: number |
       route: envelope.route,
       attemptCount: envelope.attempt.count,
       idempotencyKey: envelope.idempotencyKey,
-      traceparent: envelope.traceparent,
+      ...runtimeTraceHeadersFromEnvelope(envelope),
       ...(retryJitterMs === undefined
         ? {}
         : {
@@ -746,4 +782,23 @@ function defaultSleep(delayMs: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, delayMs);
   });
+}
+
+async function withDrainTimeout(operation: Promise<void>, timeoutMs: number): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`RabbitMQ in-flight drain exceeded ${String(timeoutMs)}ms.`));
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+    }
+  }
 }

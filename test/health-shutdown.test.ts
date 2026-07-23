@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   createBufferedRuntimeTelemetrySink,
+  createRuntimeHealthProbeSet,
+  createRuntimeInFlightDrainController,
   createRuntimeShutdownController,
   evaluateRuntimeHealth,
+  runtimeHealthEndpointResponse,
   type RuntimeShutdownSignal,
   type RuntimeShutdownSignalSource
 } from "../src/index.js";
@@ -48,6 +51,57 @@ describe("health evaluation", () => {
     expect(report.status).toBe("unhealthy");
     expect(report.checks[0]?.details?.["error"]).toBe("TypeError");
     expect(telemetry.events[0]?.name).toBe("runtime.health.evaluated");
+  });
+
+  it("keeps liveness, startup, and readiness probes distinct with redacted details", async () => {
+    const probes = createRuntimeHealthProbeSet({
+      livenessChecks: [
+        {
+          name: "process",
+          check: () => "ok"
+        }
+      ],
+      startupChecks: [
+        {
+          name: "boot",
+          critical: true,
+          check: () => "ok"
+        }
+      ],
+      readinessChecks: [
+        {
+          name: "rabbitmq",
+          critical: true,
+          check: () => ({
+            status: "unhealthy",
+            details: {
+              reason: "connection-not-open",
+              token: "secret"
+            }
+          })
+        }
+      ]
+    });
+
+    await expect(probes.liveness()).resolves.toMatchObject({
+      probe: "liveness",
+      status: "ok"
+    });
+    await expect(probes.startup()).resolves.toMatchObject({
+      probe: "startup",
+      status: "ok"
+    });
+
+    const readiness = await probes.readiness();
+    expect(readiness).toMatchObject({
+      probe: "readiness",
+      status: "unhealthy"
+    });
+    expect(readiness.checks[0]?.details).toEqual({
+      reason: "connection-not-open",
+      token: "[redacted]"
+    });
+    expect(runtimeHealthEndpointResponse(readiness).statusCode).toBe(503);
   });
 });
 
@@ -96,6 +150,28 @@ describe("shutdown controller", () => {
       "runtime.shutdown.started",
       "runtime.shutdown.completed"
     ]);
+  });
+
+  it("tracks in-flight work and blocks new work once draining starts", async () => {
+    const drain = createRuntimeInFlightDrainController({
+      timeoutMs: 1_000
+    });
+    let finishWork: (() => void) | undefined;
+    const work = drain.track(async () => {
+      await new Promise<void>((resolve) => {
+        finishWork = resolve;
+      });
+
+      return "done";
+    });
+
+    expect(drain.inFlight).toBe(1);
+    const drained = drain.waitForDrain();
+    await expect(drain.track(() => "late")).rejects.toThrow("draining");
+    finishWork?.();
+    await expect(work).resolves.toBe("done");
+    await drained;
+    expect(drain.inFlight).toBe(0);
   });
 });
 
