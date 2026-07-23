@@ -4,6 +4,13 @@ All notable changes to `@ramideltoro/nutsnews-worker-runtime` are documented her
 
 This package follows semantic versioning. Published versions are immutable; consumers roll back by pinning a previously published version.
 
+## 0.4.0 - 2026-07-23
+
+- Add separate liveness, startup, and readiness health probe helpers with safe redacted dependency details.
+- Add redacted JSON telemetry logs and bounded Prometheus metrics for throughput, retries, DLQ, processing/dependency latency, in-flight work, health, and shutdown draining.
+- Add W3C trace-context propagation helpers and RabbitMQ `tracestate` header propagation without requiring span export.
+- Add in-flight drain support so RabbitMQ shutdown cancels consumers, waits for active deliveries to settle, and only then closes channels.
+
 ## 0.3.0 - 2026-07-23
 
 - Add failure classification, redaction, retry envelope generation, terminal failure payload creation, replay primitives, and at-least-once inbox/outbox middleware interfaces.

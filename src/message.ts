@@ -2,6 +2,7 @@ import {
   getRetryDestination,
   validateStagePayload,
   validateWorkerEnvelope,
+  getWorkerRoute,
   type StagePayloadValidationIssue,
   type WorkerDeadLetterQueue,
   type WorkerMessageEnvelope,
@@ -97,11 +98,22 @@ export function createRuntimeMessageProcessor(options: RuntimeMessageProcessorOp
 
   return async (delivery: RuntimeMessageDelivery): Promise<RuntimeMessageProcessingResult> => {
     const receivedAt = delivery.receivedAt ?? runtimeNow(clock);
+    const startedAtMs = clock.now().getTime();
+    const queue = getWorkerRoute(options.stage).mainQueue.name;
+    await emitRuntimeTelemetry(options.telemetry, {
+      name: "runtime.message.started",
+      level: "info",
+      at: runtimeNow(clock),
+      stage: options.stage,
+      queue,
+      outcome: "started"
+    });
+
     const envelopeResult = validateWorkerEnvelope(delivery.envelope);
 
     if (!envelopeResult.ok) {
       const issues = envelopeResult.issues.map(toRuntimeValidationIssue);
-      await emitInvalid(options.telemetry, options.stage, undefined, issues, clock);
+      await emitInvalid(options.telemetry, options.stage, undefined, issues, clock, queue, elapsedMs(clock, startedAtMs));
 
       return {
         action: "dlq",
@@ -120,7 +132,7 @@ export function createRuntimeMessageProcessor(options: RuntimeMessageProcessorOp
           message: `Envelope route ${envelope.route} does not match processor stage ${options.stage}.`
         }
       ];
-      await emitInvalid(options.telemetry, options.stage, envelope, issues, clock);
+      await emitInvalid(options.telemetry, options.stage, envelope, issues, clock, queue, elapsedMs(clock, startedAtMs));
 
       return terminalResult(envelope, "stage-mismatch", issues);
     }
@@ -129,7 +141,7 @@ export function createRuntimeMessageProcessor(options: RuntimeMessageProcessorOp
 
     if (!payloadResult.ok) {
       const issues = payloadResult.issues.map(toRuntimeValidationIssue);
-      await emitInvalid(options.telemetry, options.stage, envelope, issues, clock);
+      await emitInvalid(options.telemetry, options.stage, envelope, issues, clock, queue, elapsedMs(clock, startedAtMs));
 
       return terminalResult(envelope, "invalid-payload", issues);
     }
@@ -142,7 +154,7 @@ export function createRuntimeMessageProcessor(options: RuntimeMessageProcessorOp
           message: `Payload schema belongs to ${payloadResult.definition.stage}, not ${options.stage}.`
         }
       ];
-      await emitInvalid(options.telemetry, options.stage, envelope, issues, clock);
+      await emitInvalid(options.telemetry, options.stage, envelope, issues, clock, queue, elapsedMs(clock, startedAtMs));
 
       return terminalResult(envelope, "payload-stage-mismatch", issues);
     }
@@ -159,10 +171,9 @@ export function createRuntimeMessageProcessor(options: RuntimeMessageProcessorOp
         level: "info",
         at: runtimeNow(clock),
         stage: options.stage,
-        messageId: envelope.messageId,
-        correlationId: envelope.correlationId,
+        ...envelopeTelemetryFields(envelope, queue, elapsedMs(clock, startedAtMs)),
+        outcome: "duplicate",
         attributes: {
-          idempotencyKey: envelope.idempotencyKey,
           firstSeenAt: claim.firstSeenAt,
           completedAt: claim.completedAt
         }
@@ -177,7 +188,7 @@ export function createRuntimeMessageProcessor(options: RuntimeMessageProcessorOp
 
     if (claim.status === "in-progress") {
       const result = retryOrDlq(envelope, "idempotency-in-progress", 1_000);
-      await emitRetryOrDlq(options.telemetry, options.stage, result, clock);
+      await emitRetryOrDlq(options.telemetry, options.stage, result, clock, queue, elapsedMs(clock, startedAtMs));
 
       return result;
     }
@@ -203,8 +214,8 @@ export function createRuntimeMessageProcessor(options: RuntimeMessageProcessorOp
           level: "info",
           at: runtimeNow(clock),
           stage: options.stage,
-          messageId: envelope.messageId,
-          correlationId: envelope.correlationId
+          ...envelopeTelemetryFields(envelope, queue, elapsedMs(clock, startedAtMs)),
+          outcome: "success"
         });
 
         return {
@@ -224,7 +235,7 @@ export function createRuntimeMessageProcessor(options: RuntimeMessageProcessorOp
         });
 
         const result = retryOrDlq(envelope, handlerResult.reason, handlerResult.retryAfterMs);
-        await emitRetryOrDlq(options.telemetry, options.stage, result, clock);
+        await emitRetryOrDlq(options.telemetry, options.stage, result, clock, queue, elapsedMs(clock, startedAtMs));
 
         return result;
       }
@@ -238,7 +249,7 @@ export function createRuntimeMessageProcessor(options: RuntimeMessageProcessorOp
       });
 
       const result = terminalResult(envelope, handlerResult.reason);
-      await emitRetryOrDlq(options.telemetry, options.stage, result, clock);
+      await emitRetryOrDlq(options.telemetry, options.stage, result, clock, queue, elapsedMs(clock, startedAtMs));
 
       return result;
     } catch (error: unknown) {
@@ -251,7 +262,7 @@ export function createRuntimeMessageProcessor(options: RuntimeMessageProcessorOp
       });
 
       const result = retryOrDlq(envelope, "handler-error");
-      await emitRetryOrDlq(options.telemetry, options.stage, result, clock);
+      await emitRetryOrDlq(options.telemetry, options.stage, result, clock, queue, elapsedMs(clock, startedAtMs));
 
       return result;
     }
@@ -355,7 +366,9 @@ async function emitInvalid(
   stage: WorkerStage,
   envelope: WorkerMessageEnvelope | undefined,
   issues: readonly RuntimeValidationIssue[],
-  clock: RuntimeClock
+  clock: RuntimeClock,
+  queue: string,
+  durationMs: number
 ): Promise<void> {
   const firstIssue = issues[0];
   const attributes = firstIssue === undefined
@@ -370,12 +383,12 @@ async function emitInvalid(
     level: "warn",
     at: runtimeNow(clock),
     stage,
+    queue,
+    durationMs,
+    outcome: "failure",
     ...(envelope === undefined
       ? {}
-      : {
-          messageId: envelope.messageId,
-          correlationId: envelope.correlationId
-        }),
+      : envelopeTelemetryFields(envelope, queue, durationMs)),
     ...(attributes === undefined
       ? {}
       : {
@@ -388,7 +401,9 @@ async function emitRetryOrDlq(
   telemetry: RuntimeTelemetrySink | undefined,
   stage: WorkerStage,
   result: RuntimeMessageProcessingResult,
-  clock: RuntimeClock
+  clock: RuntimeClock,
+  queue: string,
+  durationMs: number
 ): Promise<void> {
   if (result.action === "retry") {
     await emitRuntimeTelemetry(telemetry, {
@@ -396,8 +411,8 @@ async function emitRetryOrDlq(
       level: "warn",
       at: runtimeNow(clock),
       stage,
-      messageId: result.envelope.messageId,
-      correlationId: result.envelope.correlationId,
+      ...envelopeTelemetryFields(result.envelope, queue, durationMs),
+      outcome: "retry",
       attributes: {
         reason: result.reason,
         destination: result.destination.name
@@ -415,14 +430,42 @@ async function emitRetryOrDlq(
       stage,
       ...(result.envelope === undefined
         ? {}
-        : {
-            messageId: result.envelope.messageId,
-            correlationId: result.envelope.correlationId
-          }),
+        : envelopeTelemetryFields(result.envelope, queue, durationMs)),
+      outcome: "dlq",
       attributes: {
         reason: result.reason,
         destination: result.destination?.name ?? "unroutable"
       }
     });
   }
+}
+
+function elapsedMs(clock: RuntimeClock, startedAtMs: number): number {
+  return Math.max(0, clock.now().getTime() - startedAtMs);
+}
+
+function envelopeTelemetryFields(
+  envelope: WorkerMessageEnvelope,
+  queue: string,
+  durationMs: number
+): Readonly<Record<string, string | number>> {
+  const base = {
+    messageId: envelope.messageId,
+    correlationId: envelope.correlationId,
+    causationId: envelope.causationId,
+    traceparent: envelope.traceparent,
+    idempotencyKey: envelope.idempotencyKey,
+    queue,
+    attempt: envelope.attempt.count,
+    durationMs
+  } as const;
+
+  if (envelope.tracestate === undefined) {
+    return base;
+  }
+
+  return {
+    ...base,
+    tracestate: envelope.tracestate
+  };
 }

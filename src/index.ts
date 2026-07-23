@@ -8,10 +8,11 @@ export * from "./rabbitmq.js";
 export * from "./retry.js";
 export * from "./shutdown.js";
 export * from "./telemetry.js";
+export * from "./trace.js";
 
 export const RUNTIME_PACKAGE_NAME = "@ramideltoro/nutsnews-worker-runtime" as const;
-export const RUNTIME_PACKAGE_VERSION = "0.3.0" as const;
-export const RUNTIME_PACKAGE_STATUS = "retry-dlq-idempotency-middleware" as const;
+export const RUNTIME_PACKAGE_VERSION = "0.4.0" as const;
+export const RUNTIME_PACKAGE_STATUS = "health-grafana-telemetry-primitives" as const;
 export const RUNTIME_CONTRACTS_PACKAGE = "@ramideltoro/nutsnews-worker-contracts" as const;
 export const RUNTIME_CONTRACTS_PACKAGE_VERSION = "0.3.1" as const;
 
@@ -33,8 +34,10 @@ export const AVAILABLE_RUNTIME_MODULES = [
   "retry-dlq-idempotency-middleware",
   "idempotency-hooks",
   "telemetry",
+  "prometheus-metrics",
   "health",
-  "shutdown"
+  "shutdown",
+  "trace-context"
 ] as const;
 
 export type RuntimePackageStatus = typeof RUNTIME_PACKAGE_STATUS;
