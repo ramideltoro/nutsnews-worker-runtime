@@ -7,6 +7,7 @@
 | Module | Purpose |
 | --- | --- |
 | `broker` | Manage a service-provided broker transport lifecycle, topology assertion, publishing, consuming, and shutdown state transitions. |
+| `rabbitmq` | Provide RabbitMQ confirm-channel transport, topology assertion, mandatory persistent publishing, manual ack/nack settlement, retry/DLQ transfer, bounded prefetch, reconnect backoff, payload-loader injection, and network seams. |
 | `message` | Validate contract envelopes and payloads, apply idempotency hooks, wrap service handlers, and return ack/retry/DLQ actions. |
 | `idempotency` | Define durable idempotency hook contracts plus pass-through and in-memory implementations for local tests. |
 | `telemetry` | Emit structured runtime events through service-provided telemetry sinks without owning metrics backends or credentials. |
@@ -18,6 +19,7 @@
 ```ts
 import {
   createBrokerLifecycle,
+  createRabbitMqTransport,
   createRuntimeMessageProcessor,
   getRuntimePackageMetadata
 } from "@ramideltoro/nutsnews-worker-runtime";
@@ -25,6 +27,6 @@ import {
 
 ## Boundary
 
-The runtime package does not import legacy worker source, backend host code, or deployable worker services. Public APIs accept interfaces for transports, idempotency stores, telemetry sinks, health checks, and signal sources so each service owns its own adapters.
+The runtime package does not import legacy worker source, backend host code, or deployable worker services. Public APIs accept interfaces for idempotency stores, telemetry sinks, health checks, signal sources, RabbitMQ payload loaders, and RabbitMQ network seams so each service owns credentials, durable payload storage, and business adapters.
 
 The package does not include RabbitMQ credentials, backend credentials, Grafana credentials, model prompts, feed-fetching logic, canonicalization rules, approval rules, translation logic, persistence implementation, or publication decisions.

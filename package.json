@@ -1,6 +1,6 @@
 {
   "name": "@ramideltoro/nutsnews-worker-runtime",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shared worker-uplift runtime primitives for NutsNews services.",
   "license": "MIT",
   "repository": {
@@ -38,7 +38,8 @@
     "ci": "npm run lint && npm run typecheck && npm run test && npm run build && npm run package:check"
   },
   "dependencies": {
-    "@ramideltoro/nutsnews-worker-contracts": "https://github.com/ramideltoro/nutsnews-worker-contracts/releases/download/v0.3.1/ramideltoro-nutsnews-worker-contracts-0.3.1.tgz"
+    "@ramideltoro/nutsnews-worker-contracts": "https://github.com/ramideltoro/nutsnews-worker-contracts/releases/download/v0.3.1/ramideltoro-nutsnews-worker-contracts-0.3.1.tgz",
+    "amqplib": "2.0.1"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",
@@ -47,6 +48,7 @@
   "packageManager": "npm@11.13.0",
   "devDependencies": {
     "@eslint/js": "^9.32.0",
+    "@types/amqplib": "0.10.8",
     "@types/node": "^24.1.0",
     "eslint": "^9.32.0",
     "typescript": "^5.8.3",

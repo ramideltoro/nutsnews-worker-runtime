@@ -12,9 +12,9 @@ Consumers pin exact package versions. Version ranges are not part of the support
 
 ## Contracts Dependency
 
-Runtime `0.1.0` resolves `@ramideltoro/nutsnews-worker-contracts` from the `v0.3.1` release tarball. That tarball is the same artifact attested by the contracts package publish workflow, and package validation confirms the installed package name and version are `@ramideltoro/nutsnews-worker-contracts@0.3.1`.
+Runtime `0.2.0` resolves `@ramideltoro/nutsnews-worker-contracts` from the `v0.3.1` release tarball. That tarball is the same artifact attested by the contracts package publish workflow, and package validation confirms the installed package name and version are `@ramideltoro/nutsnews-worker-contracts@0.3.1`.
 
-The package validator rejects additional runtime dependencies and rejects source imports outside relative runtime modules or the contracts package.
+The package validator allows only the contracts package and the approved RabbitMQ client dependency, then rejects source imports outside relative runtime modules, the contracts package, and the broker client.
 
 ## Deprecation Window
 
