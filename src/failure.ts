@@ -177,12 +177,22 @@ function readNumericProperty(value: unknown, property: string): number | undefin
 }
 
 function normalizeReason(reason: string): string {
-  return reason
+  const cleaned = reason
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9._-]+/gu, "-")
-    .replace(/^-+|-+$/gu, "")
-    .slice(0, 80) || "unknown";
+    .replace(/[^a-z0-9._-]+/gu, "-");
+  let start = 0;
+  let end = cleaned.length;
+
+  while (start < end && cleaned[start] === "-") {
+    start += 1;
+  }
+
+  while (end > start && cleaned[end - 1] === "-") {
+    end -= 1;
+  }
+
+  return cleaned.slice(start, end).slice(0, 80) || "unknown";
 }
 
 function redactValue(value: unknown, depth: number): unknown {
