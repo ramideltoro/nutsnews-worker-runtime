@@ -1,0 +1,71 @@
+name: Package Install Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact package version to install, for example 0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  install-smoke:
+    name: install-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@ramideltoro"
+
+      - name: Install and import exact package version
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+
+          test -n "${PACKAGE_VERSION}"
+
+          smoke_dir="$(mktemp -d)"
+          cd "${smoke_dir}"
+
+          printf '%s\n' \
+            '@ramideltoro:registry=https://npm.pkg.github.com' \
+            '//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}' \
+            > .npmrc
+
+          npm init -y >/dev/null
+          npm install "@ramideltoro/nutsnews-worker-runtime@${PACKAGE_VERSION}"
+
+          node --input-type=module - <<'NODE'
+          import {
+            RUNTIME_PACKAGE_VERSION,
+            getRuntimePackageMetadata
+          } from "@ramideltoro/nutsnews-worker-runtime";
+
+          const metadata = getRuntimePackageMetadata();
+
+          if (RUNTIME_PACKAGE_VERSION !== process.env.PACKAGE_VERSION) {
+            throw new Error(`Installed ${RUNTIME_PACKAGE_VERSION}, expected ${process.env.PACKAGE_VERSION}`);
+          }
+
+          if (typeof metadata.status !== "string" || metadata.status.length === 0) {
+            throw new Error("Installed package metadata did not include a status.");
+          }
+
+          console.log(JSON.stringify({
+            packageName: metadata.packageName,
+            packageVersion: metadata.packageVersion,
+            status: metadata.status
+          }));
+          NODE
