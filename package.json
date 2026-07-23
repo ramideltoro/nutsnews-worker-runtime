@@ -38,7 +38,7 @@
     "ci": "npm run lint && npm run typecheck && npm run test && npm run build && npm run package:check"
   },
   "dependencies": {
-    "@ramideltoro/nutsnews-worker-contracts": "0.3.1"
+    "@ramideltoro/nutsnews-worker-contracts": "https://github.com/ramideltoro/nutsnews-worker-contracts/releases/download/v0.3.1/ramideltoro-nutsnews-worker-contracts-0.3.1.tgz"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",

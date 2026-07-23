@@ -8,6 +8,7 @@ const publicApi = readFileSync(join(root, "src", "index.ts"), "utf8");
 
 const contractsPackageName = "@ramideltoro/nutsnews-worker-contracts";
 const contractsPackageVersion = "0.3.1";
+const contractsPackageSpec = "https://github.com/ramideltoro/nutsnews-worker-contracts/releases/download/v0.3.1/ramideltoro-nutsnews-worker-contracts-0.3.1.tgz";
 const requiredScripts = [
   "build",
   "typecheck",
@@ -94,7 +95,7 @@ function assertPackageMetadata() {
 
   const dependencies = packageJson.dependencies ?? {};
   assert(Object.keys(dependencies).length === 1, "runtime package may depend only on the contracts package");
-  assert(dependencies[contractsPackageName] === contractsPackageVersion, "contracts dependency must be pinned to the approved exact version");
+  assert(dependencies[contractsPackageName] === contractsPackageSpec, "contracts dependency must resolve to the approved exact release artifact");
 
   for (const script of requiredScripts) {
     assert(typeof packageJson.scripts?.[script] === "string", `missing npm script: ${script}`);
@@ -103,6 +104,13 @@ function assertPackageMetadata() {
   for (const file of requiredFiles) {
     assert(packageJson.files?.includes(file), `package files must include ${file}`);
   }
+}
+
+function assertInstalledContractsPackage() {
+  const installedManifest = JSON.parse(readFileSync(join(root, "node_modules", "@ramideltoro", "nutsnews-worker-contracts", "package.json"), "utf8"));
+
+  assert(installedManifest.name === contractsPackageName, "installed contracts package has the wrong name");
+  assert(installedManifest.version === contractsPackageVersion, "installed contracts package has the wrong version");
 }
 
 function assertVersionExportMatchesManifest() {
@@ -208,6 +216,7 @@ function expectedBuildOutputFiles() {
 }
 
 assertPackageMetadata();
+assertInstalledContractsPackage();
 assertVersionExportMatchesManifest();
 assertNoForbiddenSourceReferences();
 assertSourceImportsStayInBoundary();
