@@ -13,12 +13,18 @@ jobs:
   validate:
     name: validate
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: "npm"
 
       - name: Validate repository bootstrap
         shell: bash
@@ -36,3 +42,12 @@ jobs:
           grep -q "production-backend" README.md
           grep -q "production-backend" docs/repository-boundary.md
           grep -q "@ramideltoro" .github/CODEOWNERS
+
+      - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm ci
+
+      - name: Validate package
+        run: npm run ci

@@ -1,0 +1,49 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  AVAILABLE_RUNTIME_MODULES,
+  RUNTIME_COMPATIBILITY_POLICY,
+  RUNTIME_CONTRACTS_PACKAGE,
+  RUNTIME_CONTRACTS_PACKAGE_VERSION,
+  RUNTIME_PACKAGE_NAME,
+  RUNTIME_PACKAGE_STATUS,
+  RUNTIME_PACKAGE_VERSION,
+  getRuntimePackageMetadata
+} from "../src/index.js";
+
+describe("runtime package metadata", () => {
+  it("exports the package identity used by downstream installers", () => {
+    expect(RUNTIME_PACKAGE_NAME).toBe("@ramideltoro/nutsnews-worker-runtime");
+    expect(RUNTIME_PACKAGE_VERSION).toBe("0.1.0");
+    expect(RUNTIME_PACKAGE_STATUS).toBe("runtime-bootstrap");
+  });
+
+  it("pins the only runtime dependency to the contracts package", () => {
+    expect(RUNTIME_CONTRACTS_PACKAGE).toBe("@ramideltoro/nutsnews-worker-contracts");
+    expect(RUNTIME_CONTRACTS_PACKAGE_VERSION).toBe("0.3.1");
+    expect(RUNTIME_COMPATIBILITY_POLICY.dependencyBoundary).toContain("contracts package only");
+  });
+
+  it("identifies available runtime modules", () => {
+    expect(AVAILABLE_RUNTIME_MODULES).toEqual([
+      "broker-lifecycle",
+      "message-handling",
+      "idempotency-hooks",
+      "telemetry",
+      "health",
+      "shutdown"
+    ]);
+  });
+
+  it("returns a stable metadata object", () => {
+    expect(getRuntimePackageMetadata()).toEqual({
+      packageName: RUNTIME_PACKAGE_NAME,
+      packageVersion: RUNTIME_PACKAGE_VERSION,
+      status: RUNTIME_PACKAGE_STATUS,
+      contractsPackageName: RUNTIME_CONTRACTS_PACKAGE,
+      contractsPackageVersion: RUNTIME_CONTRACTS_PACKAGE_VERSION,
+      availableRuntimeModules: AVAILABLE_RUNTIME_MODULES,
+      compatibilityPolicy: RUNTIME_COMPATIBILITY_POLICY
+    });
+  });
+});

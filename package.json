@@ -1,0 +1,59 @@
+{
+  "name": "@ramideltoro/nutsnews-worker-runtime",
+  "version": "0.1.0",
+  "description": "Shared worker-uplift runtime primitives for NutsNews services.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ramideltoro/nutsnews-worker-runtime.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ramideltoro/nutsnews-worker-runtime/issues"
+  },
+  "homepage": "https://github.com/ramideltoro/nutsnews-worker-runtime#readme",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist coverage *.tgz",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "package:check": "node scripts/validate-package.mjs",
+    "ci": "npm run lint && npm run typecheck && npm run test && npm run build && npm run package:check"
+  },
+  "dependencies": {
+    "@ramideltoro/nutsnews-worker-contracts": "https://github.com/ramideltoro/nutsnews-worker-contracts/releases/download/v0.3.1/ramideltoro-nutsnews-worker-contracts-0.3.1.tgz"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
+  },
+  "packageManager": "npm@11.13.0",
+  "devDependencies": {
+    "@eslint/js": "^9.32.0",
+    "@types/node": "^24.1.0",
+    "eslint": "^9.32.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.38.0",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

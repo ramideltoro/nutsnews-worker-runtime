@@ -5,57 +5,103 @@ on:
     types:
       - published
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version from package.json to publish, for example 0.1.0"
+        required: true
+        type: string
 
 permissions:
   contents: read
-  packages: write
-  id-token: write
 
 jobs:
   publish-package:
     name: publish-package
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
-      - name: Detect package manifest
-        id: manifest
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ -f package.json ]]; then
-            echo "has_manifest=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_manifest=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Skip until package exists
-        if: steps.manifest.outputs.has_manifest != 'true'
-        run: echo "No package.json is present yet."
-
       - name: Setup Node.js
-        if: steps.manifest.outputs.has_manifest == 'true'
         uses: actions/setup-node@v7
         with:
           node-version: "24"
+          cache: "npm"
           registry-url: "https://npm.pkg.github.com"
           scope: "@ramideltoro"
 
       - name: Install dependencies
-        if: steps.manifest.outputs.has_manifest == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm ci
 
-      - name: Build
-        if: steps.manifest.outputs.has_manifest == 'true'
-        run: npm run build --if-present
+      - name: Validate package
+        run: npm run ci
+
+      - name: Verify release version
+        shell: bash
+        env:
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          package_version="$(node -p "require('./package.json').version")"
+          expected_tag="v${package_version}"
+
+          if [[ -n "${RELEASE_TAG:-}" && "${RELEASE_TAG}" != "${expected_tag}" ]]; then
+            echo "Release tag ${RELEASE_TAG} does not match package version ${package_version}." >&2
+            exit 1
+          fi
+
+          if [[ -n "${DISPATCH_VERSION:-}" && "${DISPATCH_VERSION}" != "${package_version}" ]]; then
+            echo "Dispatch version ${DISPATCH_VERSION} does not match package version ${package_version}." >&2
+            exit 1
+          fi
+
+      - name: Reject already-published version
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+
+          if npm view "${package_name}@${package_version}" version --registry=https://npm.pkg.github.com >/tmp/published-version 2>/dev/null; then
+            echo "${package_name}@${package_version} is already published and immutable." >&2
+            exit 1
+          fi
+
+      - name: Pack package
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          npm pack --json > /tmp/npm-pack.json
+          filename="$(node -e 'const fs = require("fs"); const [result] = JSON.parse(fs.readFileSync("/tmp/npm-pack.json", "utf8")); console.log(result.filename);')"
+          test -s "${filename}"
+          echo "filename=${filename}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest package tarball
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ steps.pack.outputs.filename }}
 
       - name: Publish immutable package version
-        if: steps.manifest.outputs.has_manifest == 'true'
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm publish --provenance --access public
+        run: npm publish "${{ steps.pack.outputs.filename }}" --access public

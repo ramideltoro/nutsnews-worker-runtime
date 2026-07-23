@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": [
+    "eslint.config.js",
+    "scripts/**/*.mjs",
+    "src/**/*.ts",
+    "test/**/*.ts"
+  ]
+}
