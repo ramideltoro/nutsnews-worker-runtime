@@ -13,6 +13,7 @@ import {
   RabbitMqPublishError,
   assertRabbitMqTopology,
   computeRabbitMqReconnectDelayMs,
+  createBufferedRuntimeTelemetrySink,
   createRabbitMqTransport,
   publishEnvelopeWithConfirm,
   type BrokerDeliveryHandler,
@@ -275,6 +276,77 @@ describe("RabbitMQ transport", () => {
       "channel-close"
     ]);
   });
+
+  it("surfaces broker cancellation and restores the consumer", async () => {
+    const channel = new FakeRabbitMqChannel();
+    const telemetry = createBufferedRuntimeTelemetrySink();
+    const transport = createRabbitMqTransport({
+      connection: {
+        url: "amqp://worker.example.test"
+      },
+      telemetry,
+      seams: {
+        network: new FakeRabbitMqNetwork(channel)
+      }
+    });
+
+    await transport.connect();
+    await transport.assertTopology(WORKER_ROUTES);
+    await transport.consume("fetch", noopHandler());
+    channel.cancelByBroker("fetch");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "runtime.broker.consumer_state_changed",
+        outcome: "cancelled",
+        queue: "nutsnews.worker.fetch.v1"
+      }),
+      expect.objectContaining({
+        name: "runtime.broker.consumer_state_changed",
+        outcome: "recovering",
+        queue: "nutsnews.worker.fetch.v1"
+      })
+    ]));
+    expect(transport.consumerStatus?.("fetch")).toMatchObject({
+      activeConsumers: 1,
+      state: "active",
+      reason: "consumer-recovered"
+    });
+  });
+
+  it("surfaces a dropped channel before reconnecting consumers", async () => {
+    const channel = new FakeRabbitMqChannel();
+    const telemetry = createBufferedRuntimeTelemetrySink();
+    const transport = createRabbitMqTransport({
+      connection: {
+        url: "amqp://worker.example.test"
+      },
+      telemetry,
+      seams: {
+        network: new FakeRabbitMqNetwork(channel)
+      }
+    });
+
+    await transport.connect();
+    await transport.assertTopology(WORKER_ROUTES);
+    await transport.consume("fetch", noopHandler());
+    channel.drop("error");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "runtime.broker.consumer_state_changed",
+        outcome: "channel-dropped",
+        attributes: expect.objectContaining({
+          reason: "channel-error",
+          activeConsumers: 0
+        }) as Record<string, unknown>
+      })
+    ]));
+  });
 });
 
 function noopHandler(): BrokerDeliveryHandler {
@@ -492,6 +564,14 @@ class FakeRabbitMqChannel implements RabbitMqConfirmChannel {
 
   deliver(stage: WorkerStage, messageValue: RabbitMqConsumeMessage): void {
     this.consumers.get(stage)?.(messageValue);
+  }
+
+  cancelByBroker(stage: WorkerStage): void {
+    this.consumers.get(stage)?.(null);
+  }
+
+  drop(event: "close" | "error"): void {
+    this.emit(event);
   }
 
   nextAck(): Promise<void> {

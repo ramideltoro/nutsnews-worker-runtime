@@ -4,6 +4,12 @@ All notable changes to `@ramideltoro/nutsnews-worker-runtime` are documented her
 
 This package follows semantic versioning. Published versions are immutable; consumers roll back by pinning a previously published version.
 
+## 0.5.0 - 2026-07-28
+
+- Add broker consumer state monitors and lifecycle status so service readiness can fail when its main queue has zero active consumers.
+- Emit structured cancellation, channel-drop, recovery, and close transitions with bounded consumer-count and consumer-event Prometheus metrics.
+- Recover shared RabbitMQ transport consumers after broker cancellation or a dropped connection/channel.
+
 ## 0.4.0 - 2026-07-23
 
 - Add separate liveness, startup, and readiness health probe helpers with safe redacted dependency details.

@@ -9,6 +9,8 @@ import { describe, expect, it } from "vitest";
 import {
   RUNTIME_ALLOWED_METRIC_LABELS,
   RUNTIME_FORBIDDEN_METRIC_LABEL_FRAGMENTS,
+  createBrokerConsumerMonitor,
+  createBufferedRuntimeTelemetrySink,
   createJsonRuntimeTelemetrySink,
   createPrometheusRuntimeTelemetrySink,
   readRuntimeTraceContextFromHeaders,
@@ -21,7 +23,7 @@ describe("runtime JSON telemetry", () => {
     const sink = createJsonRuntimeTelemetrySink({
       identity: {
         service: "fetcher",
-        version: "0.4.0",
+        version: "0.5.0",
         environment: "shadow",
         host: "backend.nutsnews.com"
       },
@@ -68,7 +70,7 @@ describe("runtime Prometheus telemetry", () => {
     const sink = createPrometheusRuntimeTelemetrySink({
       identity: {
         service: "fetcher",
-        version: "0.4.0",
+        version: "0.5.0",
         environment: "shadow",
         host: "backend.nutsnews.com"
       }
@@ -111,6 +113,12 @@ describe("runtime Prometheus telemetry", () => {
       at: "2026-07-23T06:40:03.000Z",
       outcome: "draining"
     });
+    const consumer = createBrokerConsumerMonitor({
+      stage: "fetch",
+      telemetry: sink
+    });
+    consumer.markActive();
+    consumer.markCancelled("broker-cancelled");
 
     const output = sink.collect();
     expect(sink.allowedLabels).toEqual(RUNTIME_ALLOWED_METRIC_LABELS);
@@ -119,7 +127,11 @@ describe("runtime Prometheus telemetry", () => {
     expect(output).toContain("nutsnews_worker_dependency_duration_ms_sum");
     expect(output).toContain("nutsnews_worker_inflight");
     expect(output).toContain("nutsnews_worker_health");
+    expect(output).toContain("nutsnews_worker_consumers");
+    expect(output).toContain("nutsnews_worker_consumer_events_total");
     expect(output).toContain("nutsnews_worker_shutdown_draining");
+    expect(output).toContain('nutsnews_worker_consumers{environment="shadow",host="backend.nutsnews.com",service="fetcher",version="0.5.0",queue="nutsnews.worker.fetch.v1",outcome="active"} 0');
+    expect(output).toContain('queue="nutsnews.worker.fetch.v1",outcome="cancelled"} 1');
 
     for (const forbidden of RUNTIME_FORBIDDEN_METRIC_LABEL_FRAGMENTS) {
       expect(output).not.toContain(`${forbidden}=`);
@@ -129,6 +141,50 @@ describe("runtime Prometheus telemetry", () => {
     expect(output).not.toContain("idempotencyKey=");
     expect(output).not.toContain("traceparent=");
     expect(output).not.toContain("correlationId=");
+  });
+
+  it("writes structured consumer cancellation and channel-drop events", () => {
+    const telemetry = createBufferedRuntimeTelemetrySink();
+    const consumer = createBrokerConsumerMonitor({
+      stage: "approval",
+      telemetry
+    });
+
+    consumer.markActive();
+    consumer.markCancelled("broker-cancelled");
+    consumer.markChannelDropped("channel-error");
+
+    expect(consumer.status).toMatchObject({
+      queue: "nutsnews.worker.approval.v1",
+      state: "channel-dropped",
+      activeConsumers: 0,
+      reason: "channel-error"
+    });
+    expect(telemetry.events).toEqual([
+      expect.objectContaining({
+        name: "runtime.broker.consumer_state_changed",
+        level: "info",
+        outcome: "active"
+      }),
+      expect.objectContaining({
+        name: "runtime.broker.consumer_state_changed",
+        level: "error",
+        outcome: "cancelled",
+        attributes: expect.objectContaining({
+          reason: "broker-cancelled",
+          activeConsumers: 0
+        }) as Record<string, unknown>
+      }),
+      expect.objectContaining({
+        name: "runtime.broker.consumer_state_changed",
+        level: "error",
+        outcome: "channel-dropped",
+        attributes: expect.objectContaining({
+          reason: "channel-error",
+          activeConsumers: 0
+        }) as Record<string, unknown>
+      })
+    ]);
   });
 });
 

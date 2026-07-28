@@ -20,6 +20,13 @@ import {
 } from "./telemetry.js";
 
 export type BrokerLifecycleState = "idle" | "connecting" | "ready" | "closing" | "closed" | "failed";
+export type BrokerConsumerState =
+  | "inactive"
+  | "active"
+  | "cancelled"
+  | "channel-dropped"
+  | "recovering"
+  | "closed";
 
 export interface BrokerPublishCommand {
   readonly envelope: WorkerMessageEnvelope;
@@ -44,9 +51,34 @@ export interface BrokerConsumerHandle {
   cancel(): Promise<void>;
 }
 
+export interface BrokerConsumerStatus {
+  readonly stage: WorkerStage;
+  readonly queue: string;
+  readonly state: BrokerConsumerState;
+  readonly activeConsumers: 0 | 1;
+  readonly reason: string;
+  readonly changedAt: string;
+}
+
+export interface BrokerConsumerMonitor {
+  readonly status: BrokerConsumerStatus;
+  markActive(reason?: string): void;
+  markCancelled(reason?: string): void;
+  markChannelDropped(reason?: string): void;
+  markRecovering(reason?: string): void;
+  markClosed(reason?: string): void;
+}
+
+export interface BrokerConsumerMonitorOptions {
+  readonly stage: WorkerStage;
+  readonly telemetry?: RuntimeTelemetrySink;
+  readonly clock?: RuntimeClock;
+}
+
 export interface RuntimeBrokerTransport {
   readonly name: string;
   readonly inFlightDeliveryCount?: number;
+  consumerStatus?(stage: WorkerStage): BrokerConsumerStatus | undefined;
   connect(): Promise<void>;
   assertTopology(routes: readonly WorkerRoute[]): Promise<void>;
   publish(command: BrokerPublishCommand): Promise<BrokerPublishReceipt>;
@@ -65,6 +97,7 @@ export interface BrokerLifecycleOptions {
 export interface BrokerLifecycle {
   readonly state: BrokerLifecycleState;
   readonly routes: readonly WorkerRoute[];
+  consumerStatus(stage: WorkerStage): BrokerConsumerStatus;
   start(): Promise<void>;
   stop(reason?: string): Promise<void>;
   publish(command: BrokerPublishCommand): Promise<BrokerPublishReceipt>;
@@ -75,12 +108,18 @@ export function createBrokerLifecycle(options: BrokerLifecycleOptions): BrokerLi
   return new ManagedBrokerLifecycle(options);
 }
 
+export function createBrokerConsumerMonitor(
+  options: BrokerConsumerMonitorOptions
+): BrokerConsumerMonitor {
+  return new RuntimeBrokerConsumerMonitor(options);
+}
+
 class ManagedBrokerLifecycle implements BrokerLifecycle {
   readonly routes: readonly WorkerRoute[];
   private readonly transport: RuntimeBrokerTransport;
   private readonly telemetry: RuntimeTelemetrySink | undefined;
   private readonly clock: RuntimeClock;
-  private readonly consumerHandles = new Set<BrokerConsumerHandle>();
+  private readonly consumerHandles = new Map<WorkerStage, BrokerConsumerHandle>();
   private stateValue: BrokerLifecycleState = "idle";
 
   constructor(options: BrokerLifecycleOptions) {
@@ -92,6 +131,23 @@ class ManagedBrokerLifecycle implements BrokerLifecycle {
 
   get state(): BrokerLifecycleState {
     return this.stateValue;
+  }
+
+  consumerStatus(stage: WorkerStage): BrokerConsumerStatus {
+    const transportStatus = this.transport.consumerStatus?.(stage);
+
+    if (transportStatus !== undefined) {
+      return transportStatus;
+    }
+
+    return {
+      stage,
+      queue: getWorkerRoute(stage).mainQueue.name,
+      state: this.consumerHandles.has(stage) ? "active" : "inactive",
+      activeConsumers: this.consumerHandles.has(stage) ? 1 : 0,
+      reason: "transport-status-unavailable",
+      changedAt: runtimeNow(this.clock)
+    };
   }
 
   async start(): Promise<void> {
@@ -137,10 +193,10 @@ class ManagedBrokerLifecycle implements BrokerLifecycle {
 
     await this.transition("closing", reason);
 
-    for (const handle of this.consumerHandles) {
+    for (const handle of this.consumerHandles.values()) {
       await handle.cancel();
-      this.consumerHandles.delete(handle);
     }
+    this.consumerHandles.clear();
 
     await this.transport.drain?.();
     await this.transport.close();
@@ -164,13 +220,16 @@ class ManagedBrokerLifecycle implements BrokerLifecycle {
     this.assertReady();
 
     const handle = await this.transport.consume(stage, handler);
-    this.consumerHandles.add(handle);
+    this.consumerHandles.set(stage, handle);
 
     return {
       stage: handle.stage,
       cancel: async (): Promise<void> => {
         await handle.cancel();
-        this.consumerHandles.delete(handle);
+
+        if (this.consumerHandles.get(stage) === handle) {
+          this.consumerHandles.delete(stage);
+        }
       }
     };
   }
@@ -196,6 +255,92 @@ class ManagedBrokerLifecycle implements BrokerLifecycle {
         reason
       }
     });
+  }
+}
+
+class RuntimeBrokerConsumerMonitor implements BrokerConsumerMonitor {
+  private readonly stage: WorkerStage;
+  private readonly queue: string;
+  private readonly telemetry: RuntimeTelemetrySink | undefined;
+  private readonly clock: RuntimeClock;
+  private statusValue: BrokerConsumerStatus;
+
+  constructor(options: BrokerConsumerMonitorOptions) {
+    this.stage = options.stage;
+    this.queue = getWorkerRoute(options.stage).mainQueue.name;
+    this.telemetry = options.telemetry;
+    this.clock = options.clock ?? SYSTEM_RUNTIME_CLOCK;
+    this.statusValue = {
+      stage: this.stage,
+      queue: this.queue,
+      state: "inactive",
+      activeConsumers: 0,
+      reason: "not-started",
+      changedAt: runtimeNow(this.clock)
+    };
+  }
+
+  get status(): BrokerConsumerStatus {
+    return this.statusValue;
+  }
+
+  markActive(reason = "consume-confirmed"): void {
+    this.transition("active", reason);
+  }
+
+  markCancelled(reason = "broker-cancelled"): void {
+    this.transition("cancelled", reason);
+  }
+
+  markChannelDropped(reason = "channel-dropped"): void {
+    this.transition("channel-dropped", reason);
+  }
+
+  markRecovering(reason = "consumer-reconnect"): void {
+    this.transition("recovering", reason);
+  }
+
+  markClosed(reason = "consumer-closed"): void {
+    this.transition("closed", reason);
+  }
+
+  private transition(state: BrokerConsumerState, reason: string): void {
+    const previousState = this.statusValue.state;
+
+    if (previousState === state && this.statusValue.reason === reason) {
+      return;
+    }
+
+    const activeConsumers = state === "active" ? 1 : 0;
+    const changedAt = runtimeNow(this.clock);
+    this.statusValue = {
+      stage: this.stage,
+      queue: this.queue,
+      state,
+      activeConsumers,
+      reason,
+      changedAt
+    };
+
+    void emitRuntimeTelemetry(this.telemetry, {
+      name: "runtime.broker.consumer_state_changed",
+      level: state === "active" || state === "closed"
+        ? "info"
+        : state === "recovering"
+          ? "warn"
+          : "error",
+      at: changedAt,
+      stage: this.stage,
+      queue: this.queue,
+      outcome: state,
+      attributes: {
+        transport: "rabbitmq",
+        previousState,
+        state,
+        reason,
+        activeConsumers
+      }
+    }).catch(() => undefined);
   }
 }
 

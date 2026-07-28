@@ -12,7 +12,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   createBrokerLifecycle,
+  createBrokerConsumerReadinessCheck,
   createBufferedRuntimeTelemetrySink,
+  evaluateRuntimeHealth,
+  type BrokerConsumerStatus,
   type BrokerConsumerHandle,
   type BrokerDeliveryHandler,
   type BrokerPublishCommand,
@@ -70,6 +73,48 @@ describe("broker lifecycle", () => {
     ]);
   });
 
+  it("reports a dropped service consumer as unhealthy readiness", async () => {
+    const transport = new FakeBrokerTransport();
+    const lifecycle = createBrokerLifecycle({
+      transport
+    });
+
+    await lifecycle.start();
+    await lifecycle.consume("fetch", () => Promise.resolve({
+      action: "ack",
+      reason: "handled",
+      envelope: envelope()
+    }));
+
+    expect(lifecycle.consumerStatus("fetch")).toMatchObject({
+      activeConsumers: 1,
+      state: "active"
+    });
+
+    transport.dropConsumer("fetch", "channel-closed");
+    const report = await evaluateRuntimeHealth([
+      createBrokerConsumerReadinessCheck(lifecycle, "fetch")
+    ], {
+      probe: "readiness"
+    });
+
+    expect(report).toMatchObject({
+      status: "unhealthy",
+      checks: [
+        {
+          name: "rabbitmq-consumer",
+          critical: true,
+          details: {
+            queue: "nutsnews.worker.fetch.v1",
+            activeConsumers: 0,
+            consumerState: "channel-dropped",
+            reason: "channel-closed"
+          }
+        }
+      ]
+    });
+  });
+
   it("rejects publish before startup", async () => {
     const lifecycle = createBrokerLifecycle({
       transport: new FakeBrokerTransport()
@@ -88,6 +133,7 @@ class FakeBrokerTransport implements RuntimeBrokerTransport {
   closed = false;
   assertedRoutes: readonly WorkerRoute[] = [];
   cancelledStages: WorkerStage[] = [];
+  private readonly consumerStatuses = new Map<WorkerStage, BrokerConsumerStatus>();
 
   connect(): Promise<void> {
     this.connected = true;
@@ -116,15 +162,25 @@ class FakeBrokerTransport implements RuntimeBrokerTransport {
 
   consume(stage: WorkerStage, handler: BrokerDeliveryHandler): Promise<BrokerConsumerHandle> {
     void handler;
+    this.consumerStatuses.set(stage, consumerStatus(stage, "active", 1, "consume-confirmed"));
 
     return Promise.resolve({
       stage,
       cancel: (): Promise<void> => {
         this.cancelledStages.push(stage);
+        this.consumerStatuses.set(stage, consumerStatus(stage, "closed", 0, "consumer-handle-cancelled"));
 
         return Promise.resolve();
       }
     });
+  }
+
+  consumerStatus(stage: WorkerStage): BrokerConsumerStatus | undefined {
+    return this.consumerStatuses.get(stage);
+  }
+
+  dropConsumer(stage: WorkerStage, reason: string): void {
+    this.consumerStatuses.set(stage, consumerStatus(stage, "channel-dropped", 0, reason));
   }
 
   close(): Promise<void> {
@@ -132,6 +188,22 @@ class FakeBrokerTransport implements RuntimeBrokerTransport {
 
     return Promise.resolve();
   }
+}
+
+function consumerStatus(
+  stage: WorkerStage,
+  state: BrokerConsumerStatus["state"],
+  activeConsumers: 0 | 1,
+  reason: string
+): BrokerConsumerStatus {
+  return {
+    stage,
+    queue: getWorkerRoute(stage).mainQueue.name,
+    state,
+    activeConsumers,
+    reason,
+    changedAt: "2026-07-23T05:10:00.000Z"
+  };
 }
 
 function envelope(): WorkerMessageEnvelope {
