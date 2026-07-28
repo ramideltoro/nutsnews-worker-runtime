@@ -1,4 +1,12 @@
 import {
+  getWorkerRoute,
+  type WorkerStage
+} from "@ramideltoro/nutsnews-worker-contracts";
+
+import type {
+  BrokerLifecycle
+} from "./broker.js";
+import {
   SYSTEM_RUNTIME_CLOCK,
   emitRuntimeTelemetry,
   redactRuntimeTelemetryValue,
@@ -79,6 +87,32 @@ export function createRuntimeHealthProbeSet(
       ...options,
       probe: "readiness"
     })
+  };
+}
+
+export function createBrokerConsumerReadinessCheck(
+  broker: BrokerLifecycle,
+  stage: WorkerStage
+): RuntimeHealthCheck {
+  const queue = getWorkerRoute(stage).mainQueue.name;
+
+  return {
+    name: "rabbitmq-consumer",
+    critical: true,
+    check: () => {
+      const consumer = broker.consumerStatus(stage);
+
+      return {
+        status: consumer.activeConsumers > 0 ? "ok" : "unhealthy",
+        details: {
+          queue,
+          activeConsumers: consumer.activeConsumers,
+          consumerState: consumer.state,
+          reason: consumer.reason,
+          changedAt: consumer.changedAt
+        }
+      };
+    }
   };
 }
 

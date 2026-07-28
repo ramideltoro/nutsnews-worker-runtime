@@ -23,12 +23,19 @@ export type RuntimeTelemetryOutcome =
   | "ok"
   | "degraded"
   | "unhealthy"
+  | "inactive"
+  | "active"
+  | "cancelled"
+  | "channel-dropped"
+  | "recovering"
+  | "closed"
   | "draining"
   | "drained";
 
 export const RUNTIME_TELEMETRY_EVENT_NAMES = [
   "runtime.broker.state_changed",
   "runtime.broker.topology_asserted",
+  "runtime.broker.consumer_state_changed",
   "runtime.message.started",
   "runtime.message.accepted",
   "runtime.message.duplicate",
@@ -323,6 +330,18 @@ class InMemoryPrometheusRuntimeTelemetrySink implements PrometheusRuntimeTelemet
       case "runtime.health.evaluated":
         this.setHealth(queue, event.outcome ?? outcomeAttribute(event) ?? "ok");
         break;
+      case "runtime.broker.consumer_state_changed":
+        this.setGauge(
+          "nutsnews_worker_consumers",
+          this.labels(queue, "active"),
+          numericAttribute(event, "activeConsumers") ?? (event.outcome === "active" ? 1 : 0)
+        );
+        this.incrementCounter(
+          "nutsnews_worker_consumer_events_total",
+          this.labels(queue, event.outcome ?? outcomeAttribute(event) ?? "inactive"),
+          1
+        );
+        break;
       case "runtime.shutdown.started":
         this.setShutdownDraining(true);
         break;
@@ -345,6 +364,8 @@ class InMemoryPrometheusRuntimeTelemetrySink implements PrometheusRuntimeTelemet
     this.collectMetric(lines, "nutsnews_worker_dlq_total", "counter", "Worker DLQ outcomes by bounded queue.");
     this.collectMetric(lines, "nutsnews_worker_inflight", "gauge", "Worker in-flight deliveries by bounded queue.");
     this.collectMetric(lines, "nutsnews_worker_health", "gauge", "Worker health probe status by bounded queue and outcome.");
+    this.collectMetric(lines, "nutsnews_worker_consumers", "gauge", "Active worker consumers for the service main queue.");
+    this.collectMetric(lines, "nutsnews_worker_consumer_events_total", "counter", "Worker consumer lifecycle events by bounded queue and outcome.");
     this.collectMetric(lines, "nutsnews_worker_shutdown_draining", "gauge", "Worker shutdown drain state.");
     this.collectSummary(lines, "nutsnews_worker_processing_duration_ms", "Worker processing latency in milliseconds.");
     this.collectSummary(lines, "nutsnews_worker_dependency_duration_ms", "Worker dependency latency in milliseconds.");
@@ -504,6 +525,12 @@ function isRuntimeTelemetryOutcome(value: string): value is RuntimeTelemetryOutc
     "ok",
     "degraded",
     "unhealthy",
+    "inactive",
+    "active",
+    "cancelled",
+    "channel-dropped",
+    "recovering",
+    "closed",
     "draining",
     "drained"
   ].includes(value);

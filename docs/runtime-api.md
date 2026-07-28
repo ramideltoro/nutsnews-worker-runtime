@@ -6,7 +6,7 @@
 
 | Module | Purpose |
 | --- | --- |
-| `broker` | Manage a service-provided broker transport lifecycle, topology assertion, publishing, consuming, and shutdown state transitions. |
+| `broker` | Manage a service-provided broker transport lifecycle, topology assertion, publishing, consuming, consumer-state monitoring, and shutdown state transitions. |
 | `rabbitmq` | Provide RabbitMQ confirm-channel transport, topology assertion, mandatory persistent publishing, manual ack/nack settlement, retry/DLQ transfer, bounded prefetch, reconnect backoff, payload-loader injection, and network seams. |
 | `message` | Validate contract envelopes and payloads, apply idempotency hooks, wrap service handlers, and return ack/retry/DLQ actions. |
 | `processing` | Provide at-least-once middleware contracts for service-owned PostgreSQL inbox/outbox stores, duplicate handling, conflict detection, crash-after-side-effect recovery, failure classification, retry, and terminal failure recording. |
@@ -22,6 +22,8 @@
 ```ts
 import {
   createBrokerLifecycle,
+  createBrokerConsumerMonitor,
+  createBrokerConsumerReadinessCheck,
   createAtLeastOnceMiddleware,
   createJsonRuntimeTelemetrySink,
   createPrometheusRuntimeTelemetrySink,
@@ -42,6 +44,8 @@ The package does not include RabbitMQ credentials, backend credentials, Grafana 
 
 `createRuntimeHealthProbeSet` returns distinct liveness, startup, and readiness probe evaluators. Readiness checks should include only dependencies required to accept work, such as the broker channel or durable idempotency store, and health details are redacted before they are returned.
 
+Consumer services use `createBrokerConsumerMonitor` in their broker transport and add `createBrokerConsumerReadinessCheck` for their consumed stage. The check is critical and reports the bounded main queue, active consumer count, lifecycle state, reason, and transition timestamp. Scheduler-only producers do not add this check.
+
 `createJsonRuntimeTelemetrySink` writes one redacted JSON object per runtime event with `service`, `version`, `environment`, optional `host`, queue, attempt, duration, outcome, and message/idempotency/correlation/trace IDs as log fields. These IDs are never promoted to metric labels.
 
-`createPrometheusRuntimeTelemetrySink` exposes bounded Prometheus text for throughput, retry, DLQ, processing latency, dependency latency, in-flight work, health, and shutdown drain state. Metric labels are limited to `environment`, `host`, `service`, `version`, `queue`, and `outcome`.
+`createPrometheusRuntimeTelemetrySink` exposes bounded Prometheus text for throughput, retry, DLQ, processing latency, dependency latency, in-flight work, health, active consumers, consumer lifecycle events, and shutdown drain state. Metric labels are limited to `environment`, `host`, `service`, `version`, `queue`, and `outcome`.

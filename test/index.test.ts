@@ -14,8 +14,8 @@ import {
 describe("runtime package metadata", () => {
   it("exports the package identity used by downstream installers", () => {
     expect(RUNTIME_PACKAGE_NAME).toBe("@ramideltoro/nutsnews-worker-runtime");
-    expect(RUNTIME_PACKAGE_VERSION).toBe("0.4.0");
-    expect(RUNTIME_PACKAGE_STATUS).toBe("health-grafana-telemetry-primitives");
+    expect(RUNTIME_PACKAGE_VERSION).toBe("0.5.0");
+    expect(RUNTIME_PACKAGE_STATUS).toBe("consumer-readiness-telemetry-primitives");
   });
 
   it("pins the contracts package and broker-client dependency boundary", () => {

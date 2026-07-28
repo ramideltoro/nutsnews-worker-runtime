@@ -11,8 +11,8 @@ export * from "./telemetry.js";
 export * from "./trace.js";
 
 export const RUNTIME_PACKAGE_NAME = "@ramideltoro/nutsnews-worker-runtime" as const;
-export const RUNTIME_PACKAGE_VERSION = "0.4.0" as const;
-export const RUNTIME_PACKAGE_STATUS = "health-grafana-telemetry-primitives" as const;
+export const RUNTIME_PACKAGE_VERSION = "0.5.0" as const;
+export const RUNTIME_PACKAGE_STATUS = "consumer-readiness-telemetry-primitives" as const;
 export const RUNTIME_CONTRACTS_PACKAGE = "@ramideltoro/nutsnews-worker-contracts" as const;
 export const RUNTIME_CONTRACTS_PACKAGE_VERSION = "0.3.1" as const;
 

@@ -13,11 +13,16 @@ import {
 } from "amqplib";
 
 import type {
+  BrokerConsumerMonitor,
+  BrokerConsumerStatus,
   BrokerConsumerHandle,
   BrokerDeliveryHandler,
   BrokerPublishCommand,
   BrokerPublishReceipt,
   RuntimeBrokerTransport
+} from "./broker.js";
+import {
+  createBrokerConsumerMonitor
 } from "./broker.js";
 import type {
   RuntimeMessageProcessingResult
@@ -197,7 +202,8 @@ export interface RabbitMqConsumeMessage {
 interface ConsumerRegistration {
   readonly stage: WorkerStage;
   readonly handler: BrokerDeliveryHandler;
-  readonly consumerTag: string;
+  readonly monitor: BrokerConsumerMonitor;
+  consumerTag: string | undefined;
 }
 
 export function createRabbitMqTransport(options: RabbitMqTransportOptions): RuntimeBrokerTransport {
@@ -237,6 +243,7 @@ class RabbitMqTransport implements RuntimeBrokerTransport {
   private readonly inFlightDeliveries = new Set<Promise<void>>();
   private connection: RabbitMqConnection | undefined;
   private channel: RabbitMqConfirmChannel | undefined;
+  private reconnecting: Promise<void> | undefined;
   private routes: readonly WorkerRoute[] = [];
   private closing = false;
 
@@ -288,39 +295,53 @@ class RabbitMqTransport implements RuntimeBrokerTransport {
   }
 
   async consume(stage: WorkerStage, handler: BrokerDeliveryHandler): Promise<BrokerConsumerHandle> {
-    const route = getWorkerRoute(stage);
     const channel = await this.ensureChannel();
-    await channel.prefetch(this.prefetch);
+    const existing = this.consumers.get(stage);
 
-    const reply = await channel.consume(route.mainQueue.name, (message) => {
-      if (message === null) {
-        this.consumers.delete(stage);
-        return;
-      }
+    if (existing?.consumerTag !== undefined) {
+      existing.monitor.markClosed("consumer-replaced");
+      await channel.cancel(existing.consumerTag).catch(() => undefined);
+    }
 
-      this.trackDelivery(stage, handler, message);
-    }, {
-      noAck: false
-    });
-
-    const registration = {
+    const registration: ConsumerRegistration = {
       stage,
       handler,
-      consumerTag: reply.consumerTag
-    } as const satisfies ConsumerRegistration;
+      consumerTag: undefined,
+      monitor: createBrokerConsumerMonitor({
+        stage,
+        clock: this.clock,
+        ...(this.options.telemetry === undefined
+          ? {}
+          : {
+              telemetry: this.options.telemetry
+            })
+      })
+    };
     this.consumers.set(stage, registration);
+    await this.activateConsumer(registration, channel);
 
     return {
       stage,
       cancel: async (): Promise<void> => {
         const activeChannel = this.channel;
-        this.consumers.delete(stage);
+        const activeRegistration = this.consumers.get(stage);
 
-        if (activeChannel !== undefined) {
-          await activeChannel.cancel(reply.consumerTag);
+        if (activeRegistration !== registration) {
+          return;
+        }
+
+        this.consumers.delete(stage);
+        registration.monitor.markClosed("consumer-handle-cancelled");
+
+        if (activeChannel !== undefined && registration.consumerTag !== undefined) {
+          await activeChannel.cancel(registration.consumerTag).catch(() => undefined);
         }
       }
     };
+  }
+
+  consumerStatus(stage: WorkerStage): BrokerConsumerStatus | undefined {
+    return this.consumers.get(stage)?.monitor.status;
   }
 
   async close(): Promise<void> {
@@ -329,8 +350,10 @@ class RabbitMqTransport implements RuntimeBrokerTransport {
     for (const registration of this.consumers.values()) {
       const activeChannel = this.channel;
 
-      if (activeChannel !== undefined) {
-        await activeChannel.cancel(registration.consumerTag);
+      registration.monitor.markClosed("transport-close");
+
+      if (activeChannel !== undefined && registration.consumerTag !== undefined) {
+        await activeChannel.cancel(registration.consumerTag).catch(() => undefined);
       }
     }
 
@@ -385,11 +408,22 @@ class RabbitMqTransport implements RuntimeBrokerTransport {
         );
         const channel = await connection.createConfirmChannel();
         connection.on("close", () => {
-          this.connection = undefined;
-          this.channel = undefined;
+          if (this.connection === connection) {
+            this.connection = undefined;
+          }
+          this.markChannelDropped(channel, "connection-closed");
+        });
+        connection.on("error", () => {
+          if (this.connection === connection) {
+            this.connection = undefined;
+          }
+          this.markChannelDropped(channel, "connection-error");
         });
         channel.on("close", () => {
-          this.channel = undefined;
+          this.markChannelDropped(channel, "channel-closed");
+        });
+        channel.on("error", () => {
+          this.markChannelDropped(channel, "channel-error");
         });
         this.connection = connection;
         this.channel = channel;
@@ -416,29 +450,96 @@ class RabbitMqTransport implements RuntimeBrokerTransport {
   }
 
   private async recoverConsumers(channel: RabbitMqConfirmChannel): Promise<void> {
-    const registrations = [
-      ...this.consumers.values()
-    ];
-    this.consumers.clear();
-
-    for (const registration of registrations) {
-      const route = getWorkerRoute(registration.stage);
-      await channel.prefetch(this.prefetch);
-      const reply = await channel.consume(route.mainQueue.name, (message) => {
-        if (message === null) {
-          this.consumers.delete(registration.stage);
-          return;
-        }
-
-        this.trackDelivery(registration.stage, registration.handler, message);
-      }, {
-        noAck: false
-      });
-      this.consumers.set(registration.stage, {
-        ...registration,
-        consumerTag: reply.consumerTag
-      });
+    for (const registration of this.consumers.values()) {
+      await this.activateConsumer(registration, channel);
     }
+  }
+
+  private async activateConsumer(
+    registration: ConsumerRegistration,
+    channel: RabbitMqConfirmChannel
+  ): Promise<void> {
+    if (registration.consumerTag !== undefined) {
+      return;
+    }
+
+    const route = getWorkerRoute(registration.stage);
+    await channel.prefetch(this.prefetch);
+    const reply = await channel.consume(route.mainQueue.name, (message) => {
+      if (message === null) {
+        registration.consumerTag = undefined;
+        registration.monitor.markCancelled("broker-cancelled");
+        this.recoverCancelledConsumer(registration, channel);
+        return;
+      }
+
+      this.trackDelivery(registration.stage, registration.handler, message);
+    }, {
+      noAck: false
+    });
+    registration.consumerTag = reply.consumerTag;
+    registration.monitor.markActive(
+      registration.monitor.status.state === "inactive"
+        ? "consume-confirmed"
+        : "consumer-recovered"
+    );
+  }
+
+  private recoverCancelledConsumer(
+    registration: ConsumerRegistration,
+    channel: RabbitMqConfirmChannel
+  ): void {
+    if (
+      this.closing
+      || this.channel !== channel
+      || this.consumers.get(registration.stage) !== registration
+    ) {
+      return;
+    }
+
+    registration.monitor.markRecovering("broker-cancelled");
+    void this.activateConsumer(registration, channel).catch(() => {
+      this.markChannelDropped(channel, "consumer-reactivation-failed");
+    });
+  }
+
+  private markChannelDropped(channel: RabbitMqConfirmChannel, reason: string): void {
+    if (this.channel !== channel) {
+      return;
+    }
+
+    this.channel = undefined;
+
+    for (const registration of this.consumers.values()) {
+      registration.consumerTag = undefined;
+
+      if (this.closing) {
+        registration.monitor.markClosed("transport-close");
+      } else {
+        registration.monitor.markChannelDropped(reason);
+      }
+    }
+
+    if (!this.closing) {
+      this.recoverConsumersAfterDisconnect();
+    }
+  }
+
+  private recoverConsumersAfterDisconnect(): void {
+    if (this.closing || this.consumers.size === 0 || this.reconnecting !== undefined) {
+      return;
+    }
+
+    for (const registration of this.consumers.values()) {
+      registration.monitor.markRecovering("channel-reconnect");
+    }
+
+    this.reconnecting = this.ensureChannel()
+      .then(() => undefined)
+      .finally(() => {
+        this.reconnecting = undefined;
+      });
+    void this.reconnecting.catch(() => undefined);
   }
 
   private trackDelivery(
