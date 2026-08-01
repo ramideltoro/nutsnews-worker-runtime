@@ -41,9 +41,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Validate package
+        env:
+          NUTSNEWS_REQUIRE_PUBLISHED_CONTRACT_LOCK: "true"
         run: npm run ci
 
       - name: Verify release version

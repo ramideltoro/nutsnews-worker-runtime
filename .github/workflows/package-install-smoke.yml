@@ -39,13 +39,14 @@ jobs:
           smoke_dir="$(mktemp -d)"
           cd "${smoke_dir}"
 
+          # shellcheck disable=SC2016 # npm expands the token placeholder at install time.
           printf '%s\n' \
             '@ramideltoro:registry=https://npm.pkg.github.com' \
             '//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}' \
             > .npmrc
 
           npm init -y >/dev/null
-          npm install "@ramideltoro/nutsnews-worker-runtime@${PACKAGE_VERSION}"
+          npm install --ignore-scripts "@ramideltoro/nutsnews-worker-runtime@${PACKAGE_VERSION}"
 
           node --input-type=module - <<'NODE'
           import {

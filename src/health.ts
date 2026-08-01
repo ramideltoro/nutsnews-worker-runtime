@@ -159,7 +159,13 @@ export async function evaluateRuntimeHealth(
             probe: options.probe
           }),
       status: report.status,
-      checkCount: results.length
+      checkCount: results.length,
+      checks: results.map((result) => ({
+        name: result.name,
+        status: result.status,
+        critical: result.critical,
+        durationMs: result.durationMs
+      }))
     }
   });
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createBufferedRuntimeTelemetrySink,
+  createPrometheusRuntimeTelemetrySink,
   createRuntimeHealthProbeSet,
   createRuntimeInFlightDrainController,
   createRuntimeShutdownController,
@@ -54,7 +55,18 @@ describe("health evaluation", () => {
   });
 
   it("keeps liveness, startup, and readiness probes distinct with redacted details", async () => {
+    const metrics = createPrometheusRuntimeTelemetrySink({
+      identity: {
+        service: "fetcher",
+        version: "1.0.0",
+        environment: "test"
+      },
+      cardinality: {
+        healthChecks: ["process", "boot", "rabbitmq"]
+      }
+    });
     const probes = createRuntimeHealthProbeSet({
+      telemetry: metrics,
       livenessChecks: [
         {
           name: "process",
@@ -102,6 +114,13 @@ describe("health evaluation", () => {
       token: "[redacted]"
     });
     expect(runtimeHealthEndpointResponse(readiness).statusCode).toBe(503);
+
+    const output = metrics.collect();
+    expect(output).toContain('nutsnews_worker_health_probe{environment="test",host="unknown",service="fetcher",version="1.0.0",outcome="ok",probe="liveness"} 1');
+    expect(output).toContain('nutsnews_worker_health_probe{environment="test",host="unknown",service="fetcher",version="1.0.0",outcome="ok",probe="startup"} 1');
+    expect(output).toContain('nutsnews_worker_health_probe{environment="test",host="unknown",service="fetcher",version="1.0.0",outcome="unhealthy",probe="readiness"} 1');
+    expect(output).toContain('nutsnews_worker_health_check{environment="test",host="unknown",service="fetcher",version="1.0.0",outcome="unhealthy",probe="readiness",check="rabbitmq"} 1');
+    expect(output).toContain("nutsnews_worker_health_check_duration_seconds_bucket");
   });
 });
 

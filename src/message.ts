@@ -12,6 +12,7 @@ import {
 
 import {
   createPassThroughIdempotencyStore,
+  type RuntimeIdempotencyClaimReleaseResult,
   type RuntimeIdempotencyStore
 } from "./idempotency.js";
 import {
@@ -19,8 +20,12 @@ import {
   emitRuntimeTelemetry,
   runtimeNow,
   type RuntimeClock,
+  type RuntimeTelemetryEvent,
   type RuntimeTelemetrySink
 } from "./telemetry.js";
+import {
+  normalizeRuntimeUuidIdentifier
+} from "./telemetry-identifiers.js";
 
 export interface RuntimeMessageDelivery {
   readonly envelope: unknown;
@@ -100,7 +105,7 @@ export function createRuntimeMessageProcessor(options: RuntimeMessageProcessorOp
     const receivedAt = delivery.receivedAt ?? runtimeNow(clock);
     const startedAtMs = clock.now().getTime();
     const queue = getWorkerRoute(options.stage).mainQueue.name;
-    await emitRuntimeTelemetry(options.telemetry, {
+    await emitProcessorTelemetry(options.telemetry, {
       name: "runtime.message.started",
       level: "info",
       at: runtimeNow(clock),
@@ -146,32 +151,83 @@ export function createRuntimeMessageProcessor(options: RuntimeMessageProcessorOp
       return terminalResult(envelope, "invalid-payload", issues);
     }
 
-    if (payloadResult.definition.stage !== options.stage) {
+    const pipelineRunId = pipelineRunIdFromValidatedPayload(payloadResult.value);
+    const expectedConsumer = getWorkerRoute(options.stage).consumer;
+
+    if (payloadResult.definition.consumer !== expectedConsumer) {
       const issues = [
         {
           path: "$.schemaId",
-          code: "payload-stage-mismatch",
-          message: `Payload schema belongs to ${payloadResult.definition.stage}, not ${options.stage}.`
+          code: "payload-consumer-mismatch",
+          message: `Payload schema is consumed by ${payloadResult.definition.consumer}, not ${expectedConsumer}.`
         }
       ];
-      await emitInvalid(options.telemetry, options.stage, envelope, issues, clock, queue, elapsedMs(clock, startedAtMs));
+      await emitInvalid(
+        options.telemetry,
+        options.stage,
+        envelope,
+        issues,
+        clock,
+        queue,
+        elapsedMs(clock, startedAtMs),
+        pipelineRunId
+      );
 
-      return terminalResult(envelope, "payload-stage-mismatch", issues);
+      return terminalResult(envelope, "payload-consumer-mismatch", issues);
     }
 
-    const claim = await idempotencyStore.claim(envelope.idempotencyKey, {
-      envelope,
-      stage: options.stage,
-      receivedAt
-    });
+    const finishRetryOrDlq = async (
+      reason: string,
+      retryAfterMs?: number
+    ): Promise<RuntimeMessageProcessingResult> => {
+      const result = retryOrDlq(envelope, reason, retryAfterMs);
+      await emitRetryOrDlq(
+        options.telemetry,
+        options.stage,
+        result,
+        pipelineRunId,
+        clock,
+        queue,
+        elapsedMs(clock, startedAtMs)
+      );
+
+      return result;
+    };
+    const finishAccepted = async (): Promise<RuntimeMessageProcessingResult> => {
+      await emitProcessorTelemetry(options.telemetry, {
+        name: "runtime.message.accepted",
+        level: "info",
+        at: runtimeNow(clock),
+        stage: options.stage,
+        ...envelopeTelemetryFields(envelope, queue, elapsedMs(clock, startedAtMs), pipelineRunId),
+        outcome: "success"
+      });
+
+      return {
+        action: "ack",
+        reason: "handled",
+        envelope
+      };
+    };
+    let claim: Awaited<ReturnType<RuntimeIdempotencyStore["claim"]>>;
+
+    try {
+      claim = await idempotencyStore.claim(envelope.idempotencyKey, {
+        envelope,
+        stage: options.stage,
+        receivedAt
+      });
+    } catch {
+      return finishRetryOrDlq(IDEMPOTENCY_FAILURE_REASONS.claim);
+    }
 
     if (claim.status === "already-completed") {
-      await emitRuntimeTelemetry(options.telemetry, {
+      await emitProcessorTelemetry(options.telemetry, {
         name: "runtime.message.duplicate",
         level: "info",
         at: runtimeNow(clock),
         stage: options.stage,
-        ...envelopeTelemetryFields(envelope, queue, elapsedMs(clock, startedAtMs)),
+        ...envelopeTelemetryFields(envelope, queue, elapsedMs(clock, startedAtMs), pipelineRunId),
         outcome: "duplicate",
         attributes: {
           firstSeenAt: claim.firstSeenAt,
@@ -187,11 +243,9 @@ export function createRuntimeMessageProcessor(options: RuntimeMessageProcessorOp
     }
 
     if (claim.status === "in-progress") {
-      const result = retryOrDlq(envelope, "idempotency-in-progress", 1_000);
-      await emitRetryOrDlq(options.telemetry, options.stage, result, clock, queue, elapsedMs(clock, startedAtMs));
-
-      return result;
+      return finishRetryOrDlq("idempotency-in-progress", 1_000);
     }
+    const claimToken = claim.claimToken;
 
     const context: RuntimeMessageContext = {
       envelope,
@@ -200,73 +254,149 @@ export function createRuntimeMessageProcessor(options: RuntimeMessageProcessorOp
       receivedAt
     };
 
+    let handlerResult: RuntimeHandlerResult;
+
     try {
-      const handlerResult = await options.handler(context);
-
-      if (handlerResult.status === "ok") {
-        await idempotencyStore.markCompleted(envelope.idempotencyKey, {
-          completedAt: runtimeNow(clock),
-          messageId: envelope.messageId,
-          stage: options.stage
-        });
-        await emitRuntimeTelemetry(options.telemetry, {
-          name: "runtime.message.accepted",
-          level: "info",
-          at: runtimeNow(clock),
-          stage: options.stage,
-          ...envelopeTelemetryFields(envelope, queue, elapsedMs(clock, startedAtMs)),
-          outcome: "success"
-        });
-
-        return {
-          action: "ack",
-          reason: "handled",
-          envelope
-        };
-      }
-
-      if (handlerResult.status === "retry") {
-        await idempotencyStore.markFailed(envelope.idempotencyKey, {
-          failedAt: runtimeNow(clock),
-          messageId: envelope.messageId,
-          stage: options.stage,
-          reason: handlerResult.reason,
-          retryable: true
-        });
-
-        const result = retryOrDlq(envelope, handlerResult.reason, handlerResult.retryAfterMs);
-        await emitRetryOrDlq(options.telemetry, options.stage, result, clock, queue, elapsedMs(clock, startedAtMs));
-
-        return result;
-      }
-
-      await idempotencyStore.markFailed(envelope.idempotencyKey, {
-        failedAt: runtimeNow(clock),
-        messageId: envelope.messageId,
-        stage: options.stage,
-        reason: handlerResult.reason,
-        retryable: false
-      });
-
-      const result = terminalResult(envelope, handlerResult.reason);
-      await emitRetryOrDlq(options.telemetry, options.stage, result, clock, queue, elapsedMs(clock, startedAtMs));
-
-      return result;
+      handlerResult = await options.handler(context);
     } catch (error: unknown) {
-      await idempotencyStore.markFailed(envelope.idempotencyKey, {
-        failedAt: runtimeNow(clock),
-        messageId: envelope.messageId,
-        stage: options.stage,
+      const failureRecorded = await recordIdempotencyFailure(idempotencyStore, envelope, options.stage, clock, claimToken, {
         reason: classifyHandlerError(error),
         retryable: true
       });
 
-      const result = retryOrDlq(envelope, "handler-error");
-      await emitRetryOrDlq(options.telemetry, options.stage, result, clock, queue, elapsedMs(clock, startedAtMs));
-
-      return result;
+      return finishRetryOrDlq(failureRecorded
+        ? "handler-error"
+        : IDEMPOTENCY_FAILURE_REASONS.failureRecord);
     }
+
+    if (handlerResult.status === "ok") {
+      try {
+        await idempotencyStore.markCompleted(envelope.idempotencyKey, {
+          completedAt: runtimeNow(clock),
+          messageId: envelope.messageId,
+          claimToken,
+          stage: options.stage
+        });
+      } catch {
+        const releaseResult = await releaseIdempotencyClaim(idempotencyStore, envelope, options.stage, clock, claimToken, {
+          reason: IDEMPOTENCY_FAILURE_REASONS.completion,
+          retryable: true
+        });
+
+        if (releaseResult !== "release-error" && releaseResult.status === "preserved-completed") {
+          return finishAccepted();
+        }
+
+        return finishRetryOrDlq(IDEMPOTENCY_FAILURE_REASONS.completion);
+      }
+
+      return finishAccepted();
+    }
+
+    if (handlerResult.status === "retry") {
+      const failureRecorded = await recordIdempotencyFailure(idempotencyStore, envelope, options.stage, clock, claimToken, {
+        reason: handlerResult.reason,
+        retryable: true
+      });
+
+      return finishRetryOrDlq(
+        failureRecorded ? handlerResult.reason : IDEMPOTENCY_FAILURE_REASONS.failureRecord,
+        handlerResult.retryAfterMs
+      );
+    }
+
+    const failureRecorded = await recordIdempotencyFailure(idempotencyStore, envelope, options.stage, clock, claimToken, {
+      reason: handlerResult.reason,
+      retryable: false
+    });
+
+    if (!failureRecorded) {
+      return finishRetryOrDlq(IDEMPOTENCY_FAILURE_REASONS.failureRecord);
+    }
+
+    const result = terminalResult(envelope, handlerResult.reason);
+    await emitRetryOrDlq(
+      options.telemetry,
+      options.stage,
+      result,
+      pipelineRunId,
+      clock,
+      queue,
+      elapsedMs(clock, startedAtMs)
+    );
+
+    return result;
   };
+}
+
+const IDEMPOTENCY_FAILURE_REASONS = {
+  claim: "idempotency-claim-error",
+  completion: "idempotency-completion-error",
+  failureRecord: "idempotency-failure-record-error"
+} as const;
+
+async function releaseIdempotencyClaim(
+  store: RuntimeIdempotencyStore,
+  envelope: WorkerMessageEnvelope,
+  stage: WorkerStage,
+  clock: RuntimeClock,
+  claimToken: string,
+  failure: {
+    readonly reason: string;
+    readonly retryable: boolean;
+  }
+): Promise<RuntimeIdempotencyClaimReleaseResult | "release-error"> {
+  try {
+    return await store.releaseClaim(envelope.idempotencyKey, {
+      failedAt: runtimeNow(clock),
+      messageId: envelope.messageId,
+      claimToken,
+      stage,
+      reason: failure.reason,
+      retryable: failure.retryable
+    });
+  } catch {
+    // A conditional release is best-effort; the retry/DLQ result remains authoritative.
+    return "release-error";
+  }
+}
+
+async function recordIdempotencyFailure(
+  store: RuntimeIdempotencyStore,
+  envelope: WorkerMessageEnvelope,
+  stage: WorkerStage,
+  clock: RuntimeClock,
+  claimToken: string,
+  failure: {
+    readonly reason: string;
+    readonly retryable: boolean;
+  }
+): Promise<boolean> {
+  try {
+    await store.markFailed(envelope.idempotencyKey, {
+      failedAt: runtimeNow(clock),
+      messageId: envelope.messageId,
+      claimToken,
+      stage,
+      reason: failure.reason,
+      retryable: failure.retryable
+    });
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function emitProcessorTelemetry(
+  sink: RuntimeTelemetrySink | undefined,
+  event: RuntimeTelemetryEvent
+): Promise<void> {
+  try {
+    await emitRuntimeTelemetry(sink, event);
+  } catch {
+    // Telemetry is best-effort and must never alter message or idempotency state.
+  }
 }
 
 function retryOrDlq(
@@ -368,7 +498,8 @@ async function emitInvalid(
   issues: readonly RuntimeValidationIssue[],
   clock: RuntimeClock,
   queue: string,
-  durationMs: number
+  durationMs: number,
+  pipelineRunId?: string
 ): Promise<void> {
   const firstIssue = issues[0];
   const attributes = firstIssue === undefined
@@ -378,17 +509,17 @@ async function emitInvalid(
         issuePath: firstIssue.path
       };
 
-  await emitRuntimeTelemetry(telemetry, {
+  await emitProcessorTelemetry(telemetry, {
     name: "runtime.message.invalid",
     level: "warn",
     at: runtimeNow(clock),
     stage,
     queue,
     durationMs,
-    outcome: "failure",
+    outcome: "invalid",
     ...(envelope === undefined
       ? {}
-      : envelopeTelemetryFields(envelope, queue, durationMs)),
+      : envelopeTelemetryFields(envelope, queue, durationMs, pipelineRunId)),
     ...(attributes === undefined
       ? {}
       : {
@@ -401,17 +532,18 @@ async function emitRetryOrDlq(
   telemetry: RuntimeTelemetrySink | undefined,
   stage: WorkerStage,
   result: RuntimeMessageProcessingResult,
+  pipelineRunId: string | undefined,
   clock: RuntimeClock,
   queue: string,
   durationMs: number
 ): Promise<void> {
   if (result.action === "retry") {
-    await emitRuntimeTelemetry(telemetry, {
+    await emitProcessorTelemetry(telemetry, {
       name: "runtime.message.retry",
       level: "warn",
       at: runtimeNow(clock),
       stage,
-      ...envelopeTelemetryFields(result.envelope, queue, durationMs),
+      ...envelopeTelemetryFields(result.envelope, queue, durationMs, pipelineRunId),
       outcome: "retry",
       attributes: {
         reason: result.reason,
@@ -423,14 +555,14 @@ async function emitRetryOrDlq(
   }
 
   if (result.action === "dlq") {
-    await emitRuntimeTelemetry(telemetry, {
+    await emitProcessorTelemetry(telemetry, {
       name: "runtime.message.dlq",
       level: "error",
       at: runtimeNow(clock),
       stage,
       ...(result.envelope === undefined
         ? {}
-        : envelopeTelemetryFields(result.envelope, queue, durationMs)),
+        : envelopeTelemetryFields(result.envelope, queue, durationMs, pipelineRunId)),
       outcome: "dlq",
       attributes: {
         reason: result.reason,
@@ -447,7 +579,8 @@ function elapsedMs(clock: RuntimeClock, startedAtMs: number): number {
 function envelopeTelemetryFields(
   envelope: WorkerMessageEnvelope,
   queue: string,
-  durationMs: number
+  durationMs: number,
+  pipelineRunId?: string
 ): Readonly<Record<string, string | number>> {
   const base = {
     messageId: envelope.messageId,
@@ -457,7 +590,10 @@ function envelopeTelemetryFields(
     idempotencyKey: envelope.idempotencyKey,
     queue,
     attempt: envelope.attempt.count,
-    durationMs
+    durationMs,
+    ...(pipelineRunId === undefined ? {} : {
+      pipelineRunId
+    })
   } as const;
 
   if (envelope.tracestate === undefined) {
@@ -468,4 +604,8 @@ function envelopeTelemetryFields(
     ...base,
     tracestate: envelope.tracestate
   };
+}
+
+function pipelineRunIdFromValidatedPayload(payload: Readonly<Record<string, unknown>>): string | undefined {
+  return normalizeRuntimeUuidIdentifier(payload["pipelineRunId"]);
 }

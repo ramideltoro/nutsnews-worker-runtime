@@ -6,7 +6,7 @@ Shared worker-uplift runtime primitives for NutsNews services.
 
 Own shared worker runtime concerns such as RabbitMQ connection helpers, retry policy helpers, structured logging, tracing, metrics adapters, and process lifecycle behavior.
 
-Version `0.5.0` exports stage-neutral runtime modules for broker lifecycle, consumer readiness and recovery, RabbitMQ client behavior, message handling, retry/DLQ/idempotency middleware, idempotency hooks, structured JSON logs, Prometheus metrics, health probes, shutdown draining, and trace-context propagation.
+Version `1.0.0` exports stage-neutral runtime modules for broker lifecycle, consumer readiness and recovery, RabbitMQ client behavior, message handling, retry/DLQ/idempotency middleware, idempotency hooks, structured JSON logs, fixed-bucket Prometheus histograms, probe-specific health metrics, shutdown draining, and trace-context propagation.
 
 ## Owner
 
@@ -21,7 +21,7 @@ GitHub Packages npm package: `@ramideltoro/nutsnews-worker-runtime`. This reposi
 Consumers install exact immutable versions from GitHub Packages:
 
 ```sh
-npm install @ramideltoro/nutsnews-worker-runtime@0.5.0
+npm install @ramideltoro/nutsnews-worker-runtime@1.0.0
 ```
 
 CI consumers use the owner-scoped npm registry with a short-lived `GITHUB_TOKEN`:
@@ -64,7 +64,7 @@ See [docs/runtime-api.md](docs/runtime-api.md), [docs/compatibility-policy.md](d
 ## Development
 
 ```sh
-npm ci
+npm ci --ignore-scripts
 npm run ci
 ```
 
@@ -74,7 +74,7 @@ npm run ci
 
 Published versions are immutable. Releases are created from tags matching `v<package.json version>`, then the publish workflow:
 
-- installs dependencies with `npm ci`;
+- installs dependencies with `npm ci --ignore-scripts`;
 - reruns the full package CI;
 - rejects an already-published package version;
 - builds and dry-validates the package tarball contents;
@@ -95,7 +95,7 @@ This repository owns its package or service implementation, CI, package or image
 
 ## Package / Image Access
 
-Downstream builds consume this package through GitHub Packages with an exact immutable version, for example `@ramideltoro/nutsnews-worker-runtime@0.5.0`, using a short-lived `GITHUB_TOKEN` and the owner-scoped npm registry.
+Downstream builds consume this package through GitHub Packages with an exact immutable version, for example `@ramideltoro/nutsnews-worker-runtime@1.0.0`, using a short-lived `GITHUB_TOKEN` and the owner-scoped npm registry.
 
 No long-lived GitHub Packages token is required for CI. Workflows use least-privilege permissions and request `packages: write` only for publish jobs.
 

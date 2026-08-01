@@ -14,13 +14,13 @@ import {
 describe("runtime package metadata", () => {
   it("exports the package identity used by downstream installers", () => {
     expect(RUNTIME_PACKAGE_NAME).toBe("@ramideltoro/nutsnews-worker-runtime");
-    expect(RUNTIME_PACKAGE_VERSION).toBe("0.5.0");
-    expect(RUNTIME_PACKAGE_STATUS).toBe("consumer-readiness-telemetry-primitives");
+    expect(RUNTIME_PACKAGE_VERSION).toBe("1.0.0");
+    expect(RUNTIME_PACKAGE_STATUS).toBe("grafana-cloud-telemetry-primitives");
   });
 
   it("pins the contracts package and broker-client dependency boundary", () => {
     expect(RUNTIME_CONTRACTS_PACKAGE).toBe("@ramideltoro/nutsnews-worker-contracts");
-    expect(RUNTIME_CONTRACTS_PACKAGE_VERSION).toBe("0.3.1");
+    expect(RUNTIME_CONTRACTS_PACKAGE_VERSION).toBe("1.0.0");
     expect(RUNTIME_COMPATIBILITY_POLICY.dependencyBoundary).toContain("contracts package and narrow broker client libraries");
   });
 
