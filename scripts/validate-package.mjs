@@ -1,14 +1,23 @@
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { extname, join, relative, sep } from "node:path";
+
+import {
+  isExactGitHubPackagesPackageResolution,
+  releaseRequiresMigrationNotes
+} from "../dist/release-validation.js";
 
 const root = new URL("..", import.meta.url).pathname;
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const packageLock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
 const publicApi = readFileSync(join(root, "src", "index.ts"), "utf8");
+const changelog = readFileSync(join(root, "CHANGELOG.md"), "utf8");
 
 const contractsPackageName = "@ramideltoro/nutsnews-worker-contracts";
-const contractsPackageVersion = "0.3.1";
-const contractsPackageSpec = "https://github.com/ramideltoro/nutsnews-worker-contracts/releases/download/v0.3.1/ramideltoro-nutsnews-worker-contracts-0.3.1.tgz";
+const contractsPackageVersion = "1.0.0";
+const contractsPackageSpec = contractsPackageVersion;
+const requirePublishedContractsLock = process.env["NUTSNEWS_REQUIRE_PUBLISHED_CONTRACT_LOCK"] === "true";
+const explicitlyBreakingRelease = process.env["NUTSNEWS_BREAKING_RELEASE"] === "true";
 const amqplibPackageName = "amqplib";
 const amqplibPackageVersion = "2.0.1";
 const allowedSourceImports = new Set([
@@ -101,8 +110,31 @@ function assertPackageMetadata() {
 
   const dependencies = packageJson.dependencies ?? {};
   assert(Object.keys(dependencies).length === 2, "runtime package may depend only on the contracts package and approved broker client");
-  assert(dependencies[contractsPackageName] === contractsPackageSpec, "contracts dependency must resolve to the approved exact release artifact");
+  assert(dependencies[contractsPackageName] === contractsPackageSpec, "contracts dependency must resolve to the approved exact package version");
   assert(dependencies[amqplibPackageName] === amqplibPackageVersion, "amqplib dependency must be pinned to the approved exact version");
+  assert(packageLock.packages?.[""]?.dependencies?.[contractsPackageName] === contractsPackageSpec, "lockfile root must pin the approved exact contracts version");
+  const contractsLockEntry = packageLock.packages?.[`node_modules/${contractsPackageName}`];
+  assert(contractsLockEntry?.version === contractsPackageVersion, "lockfile must resolve the approved exact contracts version");
+
+  if (requirePublishedContractsLock) {
+    assert(
+      isExactGitHubPackagesPackageResolution(
+        contractsLockEntry.resolved,
+        contractsPackageName,
+        contractsPackageVersion
+      ),
+      "release lockfile must resolve the exact contracts version from the expected GitHub Packages origin and download path"
+    );
+    assert(/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(contractsLockEntry.integrity ?? ""), "release lockfile must include the published contracts package integrity");
+  }
+
+  const changelogVersions = [...changelog.matchAll(/^## (\d+\.\d+\.\d+) - /gmu)]
+    .map((match) => match[1]);
+  assert(changelogVersions[0] === packageJson.version, "CHANGELOG.md must start with the package version");
+
+  if (releaseRequiresMigrationNotes(packageJson.version, changelogVersions[1], explicitlyBreakingRelease)) {
+    assert(existsSync(join(root, "docs", "migrations", `MIGRATION-v${packageJson.version}.md`)), "breaking runtime releases require versioned migration notes");
+  }
 
   for (const script of requiredScripts) {
     assert(typeof packageJson.scripts?.[script] === "string", `missing npm script: ${script}`);
@@ -131,6 +163,10 @@ function assertVersionExportMatchesManifest() {
   assert(
     publicApi.includes(`RUNTIME_PACKAGE_VERSION = "${packageJson.version}"`),
     "RUNTIME_PACKAGE_VERSION must match package.json"
+  );
+  assert(
+    publicApi.includes(`RUNTIME_CONTRACTS_PACKAGE_VERSION = "${contractsPackageVersion}"`),
+    "RUNTIME_CONTRACTS_PACKAGE_VERSION must match the exact contracts dependency"
   );
 }
 

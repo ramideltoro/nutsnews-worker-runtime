@@ -4,6 +4,23 @@ All notable changes to `@ramideltoro/nutsnews-worker-runtime` are documented her
 
 This package follows semantic versioning. Published versions are immutable; consumers roll back by pinning a previously published version.
 
+## 1.0.0 - 2026-08-01
+
+- Validate incoming payload schemas against the routed worker consumer, allowing valid cross-stage handoffs such as enrichment to approval while rejecting schemas owned by another consumer.
+- Align the runtime's exact contract dependency with `@ramideltoro/nutsnews-worker-contracts@1.0.0`, whose corrected ownership metadata accepts the real fetcher-to-canonicalizer candidate handoff.
+- Convert idempotency claim, completion, and failure-record errors into one bounded retry/DLQ outcome per validated delivery. Ambiguous claim failures are never released without a returned opaque ownership token; after a known claim, token-aware completion/failure operations and the new `releaseClaim` compare-and-set hook cannot downgrade completed work or another delivery's claim. A completion confirmed during conditional release is acknowledged instead of retried or sent to DLQ.
+- Replace millisecond sum/count summaries with fixed-bucket Prometheus histograms in seconds for processing, dependency, and health-check duration.
+- Make `runtime.dependency.observed` the sole dependency-duration observation path so missing and duplicate zero-duration samples cannot distort latency.
+- Export isolated liveness, startup, readiness, and bounded dependency-check states, plus build, deployment-adapter, expected-active, and last-success signals.
+- Preserve invalid validation events as the bounded `invalid` terminal outcome instead of folding them into generic failure metrics.
+- Contain telemetry sink failures at the shared message-processor boundary so an attempted log or metric cannot change completed idempotency state or create retry/DLQ decisions.
+- Carry the validated payload's optional `pipelineRunId` as policy-bounded structured log metadata for cross-stage Loki drilldowns, canonicalizing UUID/trace identifiers and omitting malformed or oversized values while explicitly excluding identifiers from metric and Loki stream labels.
+- Require explicit dependency and health-check allowlists; unapproved values collapse to `other`, while correlation and content identifiers remain log metadata only.
+- Bound event-derived stage and per-family message, dependency, and consumer outcomes to fixed allowlists with a shared `other` fallback.
+- Require release locks to use the exact GitHub Packages contracts origin and version path, require migration notes only for major transitions or explicitly breaking releases, and disable dependency lifecycle scripts in package workflows.
+- Refresh the development lockfile to patched `brace-expansion` releases.
+- Remove the public `recordDependencyLatency` method. Consumers must migrate through service-local conformance tests before adopting this major version.
+
 ## 0.5.0 - 2026-07-28
 
 - Add broker consumer state monitors and lifecycle status so service readiness can fail when its main queue has zero active consumers.
